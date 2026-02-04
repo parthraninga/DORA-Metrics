@@ -12,13 +12,11 @@ export const useDoraMetricsGraph = () => {
   );
 
   const meanTimeToRestoreTrends = useSelector((s) => ({
-    ...s.doraMetrics.metrics_summary?.mean_time_to_restore_trends.current,
-    ...s.doraMetrics.metrics_summary?.mean_time_to_restore_trends.previous
+    ...s.doraMetrics.metrics_summary?.mean_time_to_restore_trends.current
   }));
 
   const changeFailureRateTrends = useSelector((s) => ({
-    ...s.doraMetrics.metrics_summary?.change_failure_rate_trends.current,
-    ...s.doraMetrics.metrics_summary?.change_failure_rate_trends.previous
+    ...s.doraMetrics.metrics_summary?.change_failure_rate_trends.current
   }));
 
   const activeTrends = leadTimeTrends;

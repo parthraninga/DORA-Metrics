@@ -31,6 +31,12 @@ export const overlaysImportMap = {
       default: c.AllIncidentsBody
     }))
   ),
+  /** Same as all_incidents but with MTTR chart/header (opened from Mean time to recovery card). */
+  mttr_incidents: lazy(() =>
+    import('@/content/DoraMetrics/Incidents').then((c) => ({
+      default: c.AllIncidentsBody
+    }))
+  ),
   resolved_incidents: lazy(() =>
     import('@/content/DoraMetrics/ResolvedIncidents').then((c) => ({
       default: c.ResolvedIncidentsBody

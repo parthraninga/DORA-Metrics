@@ -31,7 +31,7 @@ endpoint.handle.POST(postSchema, async (req, res) => {
   }
 
   const { data: repos } = await supabaseServer
-    .from('Repos')
+    .from('repos')
     .select('id, token_id, org_name, repo_name, cfr_type, workflow_file, last_fetched_at')
     .in('id', repoIds);
 
@@ -52,7 +52,7 @@ endpoint.handle.POST(postSchema, async (req, res) => {
     last_fetched_at: string | null;
   }>) {
     const { data: tokenRow } = await supabaseServer
-      .from('Tokens')
+      .from('tokens')
       .select('token')
       .eq('id', repo.token_id)
       .single();
@@ -130,7 +130,7 @@ endpoint.handle.POST(postSchema, async (req, res) => {
             fetchDataId
           );
           await supabaseServer
-            .from('Repos')
+            .from('repos')
             .update({ last_fetched_at: toTime })
             .eq('id', repo.id);
         }

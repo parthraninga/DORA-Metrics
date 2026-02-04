@@ -89,8 +89,9 @@ export const MeanTimeToRestoreCard = () => {
         });
         addPage({
           page: {
-            title: 'Resolved Incidents',
-            ui: 'resolved_incidents'
+            title: 'Mean time to recovery',
+            ui: 'mttr_incidents',
+            props: { context: 'mttr' }
           }
         });
       }}
@@ -198,8 +199,9 @@ export const MeanTimeToRestoreCard = () => {
                     });
                     addPage({
                       page: {
-                        title: 'Resolved Incidents',
-                        ui: 'resolved_incidents'
+                        title: 'Mean time to recovery',
+                        ui: 'mttr_incidents',
+                        props: { context: 'mttr' }
                       }
                     });
                   }}

@@ -61,7 +61,7 @@ endpoint.handle.GET(nullSchema, async (req, res) => {
     if (repoIds.length === 0) return res.send([]);
 
     const { data: reposRows } = await supabaseServer
-      .from('Repos')
+      .from('repos')
       .select('id, repo_name, prod_branch, stage_branch, dev_branch')
       .in('id', repoIds);
 

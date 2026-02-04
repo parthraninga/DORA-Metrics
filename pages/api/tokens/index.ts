@@ -16,7 +16,7 @@ const endpoint = new Endpoint(nullSchema);
 
 endpoint.handle.GET(getSchema, async (_req, res) => {
   const { data, error } = await supabaseServer
-    .from('Tokens')
+    .from('tokens')
     .select('id, name, token, type, created_at')
     .order('created_at', { ascending: false });
 
@@ -39,7 +39,7 @@ endpoint.handle.POST(postSchema, async (req, res) => {
   const { name, token, type } = req.payload;
 
   const { data, error } = await supabaseServer
-    .from('Tokens')
+    .from('tokens')
     .insert({ name, token, type })
     .select('id, name, type, created_at')
     .single();

@@ -20,7 +20,7 @@ endpoint.handle.GET(nullSchema, async (req, res) => {
   const { id } = req.payload;
 
   const { data, error } = await supabaseServer
-    .from('Tokens')
+    .from('tokens')
     .select('id, name, token, type, created_at')
     .eq('id', id)
     .single();
@@ -52,7 +52,7 @@ endpoint.handle.PATCH(patchSchema, async (req, res) => {
   }
 
   const { data, error } = await supabaseServer
-    .from('Tokens')
+    .from('tokens')
     .update(updates)
     .eq('id', id)
     .select('id, name, type, created_at')
@@ -71,7 +71,7 @@ endpoint.handle.PATCH(patchSchema, async (req, res) => {
 endpoint.handle.DELETE(nullSchema, async (req, res) => {
   const { id } = req.payload;
 
-  const { error } = await supabaseServer.from('Tokens').delete().eq('id', id);
+  const { error } = await supabaseServer.from('tokens').delete().eq('id', id);
 
   if (error) {
     return res.status(500).send({ error: error.message });

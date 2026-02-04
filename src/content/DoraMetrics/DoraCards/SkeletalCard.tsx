@@ -1,8 +1,9 @@
-import { Paper, Grid, Divider, useTheme } from '@mui/material';
+import { Box, Paper, Grid, Divider, useTheme } from '@mui/material';
 import Link from 'next/link';
 import { FC, useEffect } from 'react';
 
 import { FlexBox } from '@/components/FlexBox';
+import { DarkTooltip } from '@/components/Shared';
 import { Line } from '@/components/Text';
 import { useBoolState } from '@/hooks/useEasyState';
 import { OPEN_IN_NEW_TAB_PROPS } from '@/utils/url';
@@ -98,33 +99,77 @@ const ScoreSkeleton: FC<{ animation?: boolean }> = ({ animation }) => {
     mttr: 7
   };
 
+  const tooltipContentSx = {
+    maxWidth: 380,
+    px: 2,
+    py: 1.5,
+    color: 'inherit',
+    '& strong': { color: 'inherit', fontWeight: theme.typography.fontWeightBold }
+  };
+
+  const doraScoreTooltip = (
+    <Box sx={tooltipContentSx} component="span">
+      <Line bold sx={{ display: 'block', mb: 1 }}>
+        How your DORA score is calculated
+      </Line>
+      <Line small sx={{ display: 'block', mb: 1 }}>
+        <strong>Overall:</strong> Your score (out of 10) = mean of the four
+        metric scores below, rounded to 1 decimal. Only metrics with data are
+        included.
+      </Line>
+      <Line small sx={{ display: 'block', mb: 0.5 }}>
+        <strong>Lead Time (0–10):</strong> Shorter = better. Score = 2 × tier:
+        ≥6 months → 0, ≥1 month → 2, ≥1 week → 4, ≥1 day → 6, ≥1 hour → 8,
+        &lt;1 hour → 10.
+      </Line>
+      <Line small sx={{ display: 'block', mb: 0.5 }}>
+        <strong>Deployment Frequency (0–10):</strong> More deploys/week =
+        better. Score = 2 × tier: ≤1 per 6 months → 0, ≤monthly → 2, ≤weekly
+        → 4, ≤daily → 6, ≤14/week → 8, &gt;14/week → 10.
+      </Line>
+      <Line small sx={{ display: 'block', mb: 0.5 }}>
+        <strong>Change Failure Rate (0–10):</strong> Score = (100 − CFR%) ÷
+        10 (e.g. 0% → 10, 10% → 9, 50% → 5, 100% → 0).
+      </Line>
+      <Line small sx={{ display: 'block' }}>
+        <strong>Mean Time to Recovery (0–10):</strong> Same tiers as Lead
+        Time: shorter = higher score.
+      </Line>
+    </Box>
+  );
+
   return (
     <FlexBox>
       <FlexBox centered gap={1.5}>
-        <FlexBox col>
-          <Line bigish bold white>
-            Your DORA
-          </Line>
-          <Line bigish bold white>
-            Performance
-          </Line>
-        </FlexBox>
+        <DarkTooltip title={doraScoreTooltip} placement="bottom-start" arrow>
+          <FlexBox col sx={{ cursor: 'help' }}>
+            <Line bigish bold white>
+              Your DORA
+            </Line>
+            <Line bigish bold white>
+              Performance
+            </Line>
+          </FlexBox>
+        </DarkTooltip>
 
-        <FlexBox
-          col
-          height={'50px'}
-          centered
-          gap={'14px'}
-          ml={1}
-          sx={{
-            filter: `brightness(${animation ? 0.7 : 1})`,
-            opacity: animation ? 0.7 : 1,
-            transition: `all ${ANIMATON_DURATION}ms linear`
-          }}
-        >
-          <Skeleton height="12px" width="90px" />
-          <Skeleton height="12px" width="90px" />
-        </FlexBox>
+        <DarkTooltip title={doraScoreTooltip} placement="bottom" arrow>
+          <FlexBox
+            col
+            height={'50px'}
+            centered
+            gap={'14px'}
+            ml={1}
+            sx={{
+              cursor: 'help',
+              filter: `brightness(${animation ? 0.7 : 1})`,
+              opacity: animation ? 0.7 : 1,
+              transition: `all ${ANIMATON_DURATION}ms linear`
+            }}
+          >
+            <Skeleton height="12px" width="90px" />
+            <Skeleton height="12px" width="90px" />
+          </FlexBox>
+        </DarkTooltip>
 
         <FlexBox col ml={4}>
           <Line bigish bold white>

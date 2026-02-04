@@ -34,7 +34,7 @@ endpoint.handle.GET(nullSchema, async (_req, res) => {
 
   const allRepoIds = [...new Set((teamReposRows || []).map((r: { repo_id: string }) => r.repo_id))];
   const { data: reposRows } = allRepoIds.length
-    ? await supabaseServer.from('Repos').select('id, repo_name, org_name, last_fetched_at').in('id', allRepoIds)
+    ? await supabaseServer.from('repos').select('id, repo_name, org_name, last_fetched_at').in('id', allRepoIds)
     : { data: [] };
   const reposById = (reposRows || []).reduce(
     (acc: Record<string, { id: string; repo_name: string; org_name: string; last_fetched_at?: string | null }>, r: { id: string; repo_name: string; org_name: string; last_fetched_at?: string | null }) => {

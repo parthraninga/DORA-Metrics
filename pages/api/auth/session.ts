@@ -33,38 +33,49 @@ export const delUserIdCookie = (res: NextApiResponse) => {
 };
 
 endpoint.handle.GET(nullSchema, async (_req, res) => {
-  const [orgDetails, integrationsLinkedAtMap] = await Promise.all([
-    getOrgDetails(),
-    getOrgIntegrations()
-  ]);
+  try {
+    const [orgDetails, integrationsLinkedAtMap] = await Promise.all([
+      getOrgDetails(),
+      getOrgIntegrations()
+    ]);
 
-  const [onboardingState, codeProviderLastSyncedAt] = await Promise.all([
-    getOnBoardingState(orgDetails.id),
-    getLastSyncedAtForCodeProvider(orgDetails.id)
-  ]);
-  const integrations = {} as IntegrationsMap;
-  Object.entries(integrationsLinkedAtMap).forEach(
-    ([integrationName, integrationLinkedAt]) => {
-      integrations[integrationName as keyof IntegrationsMap] = {
-        integrated: true,
-        linked_at: integrationLinkedAt,
-        last_synced_at: CODE_PROVIDER_INTEGRATIONS_MAP[
-          integrationName as keyof typeof CODE_PROVIDER_INTEGRATIONS_MAP
-        ]
-          ? codeProviderLastSyncedAt
-          : null
-      };
+    if (!orgDetails?.id) {
+      return res.status(200).send({ org: {} });
     }
-  );
 
-  res.send({
-    org:
-      {
+    const [onboardingState, codeProviderLastSyncedAt] = await Promise.all([
+      getOnBoardingState(orgDetails.id),
+      getLastSyncedAtForCodeProvider(orgDetails.id)
+    ]);
+    const integrations = {} as IntegrationsMap;
+    Object.entries(integrationsLinkedAtMap).forEach(
+      ([integrationName, integrationLinkedAt]) => {
+        integrations[integrationName as keyof IntegrationsMap] = {
+          integrated: true,
+          linked_at: integrationLinkedAt,
+          last_synced_at: CODE_PROVIDER_INTEGRATIONS_MAP[
+            integrationName as keyof typeof CODE_PROVIDER_INTEGRATIONS_MAP
+          ]
+            ? codeProviderLastSyncedAt
+            : null
+        };
+      }
+    );
+
+    return res.status(200).send({
+      org: {
         ...orgDetails,
         ...onboardingState,
         integrations
-      } || {}
-  });
+      }
+    });
+  } catch (err) {
+    console.warn(
+      '[GET /api/auth/session] Error, returning empty session:',
+      err instanceof Error ? err.message : err
+    );
+    return res.status(200).send({ org: {} });
+  }
 });
 
 export default endpoint.serve();

@@ -357,13 +357,23 @@ export const PullRequestsTableMini: FC<
                       </FlexBox>
                     </TableCell>
                   )}
-                  {!hideColumns?.has('cycle_time') && (
+                  {!hideColumns?.has('lead_time') && (
                     <TableCell sx={{ p: CELL_PAD }}>
-                      <MiniCycleTimeStat
-                        cycle={pr.cycle_time}
+                      <MiniLeadTimeStat
+                        leadTime={
+                          pr.lead_time ??
+                          pr.lead_time_as_sum_of_parts ??
+                          ((pr.first_commit_to_open ?? 0) +
+                            (pr.first_response_time ?? 0) +
+                            (pr.rework_time ?? 0) +
+                            (pr.merge_time ?? 0) +
+                            (pr.merge_to_deploy ?? 0))
+                        }
+                        commit={pr.first_commit_to_open}
                         response={pr.first_response_time}
                         rework={pr.rework_time}
-                        release={pr.merge_time}
+                        merge={pr.merge_time}
+                        deploy={pr.merge_to_deploy}
                       />
                     </TableCell>
                   )}
@@ -543,6 +553,55 @@ export const MiniCycleTimeStat: FC<{
       tooltipPlacement="left"
     >
       <CycleTimePill time={calcCycleTime || cycle} />
+    </FlexBox>
+  );
+};
+
+/** Total lead time (commit → deploy) for the PR table "Lead" column. */
+export const MiniLeadTimeStat: FC<{
+  leadTime: number;
+  commit?: number;
+  response?: number;
+  rework?: number;
+  merge?: number;
+  deploy?: number;
+}> = ({
+  leadTime,
+  commit = 0,
+  response = 0,
+  rework = 0,
+  merge = 0,
+  deploy = 0
+}) => {
+  const hasBreakdown =
+    commit || response || rework || merge || deploy;
+  const title = hasBreakdown ? (
+    <Box display="grid" gridTemplateColumns="auto 1fr" columnGap={2} fontSize="1em">
+      <Box gridArea="1 / 1 / 2 / 3" fontWeight={700} mb={1}>
+        Lead time (commit → deploy)
+      </Box>
+      <Box>Commit</Box>
+      <Box textAlign="right">{getDurationString(commit) || '-'}</Box>
+      <Box>Response</Box>
+      <Box textAlign="right">{getDurationString(response) || '-'}</Box>
+      <Box>Rework</Box>
+      <Box textAlign="right">{getDurationString(rework) || '-'}</Box>
+      <Box>Merge</Box>
+      <Box textAlign="right">{getDurationString(merge) || '-'}</Box>
+      <Box>Deploy</Box>
+      <Box textAlign="right">{getDurationString(deploy) || '-'}</Box>
+    </Box>
+  ) : undefined;
+
+  return (
+    <FlexBox
+      alignCenter
+      gap1
+      darkTip
+      title={title}
+      tooltipPlacement="left"
+    >
+      <CycleTimePill time={leadTime} />
     </FlexBox>
   );
 };

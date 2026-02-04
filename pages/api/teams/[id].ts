@@ -34,7 +34,7 @@ endpoint.handle.GET(nullSchema, async (req, res) => {
   const repoIds = (links || []).map((r: { repo_id: string }) => r.repo_id);
 
   const { data: repos } = repoIds.length
-    ? await supabaseServer.from('Repos').select('*').in('id', repoIds)
+    ? await supabaseServer.from('repos').select('*').in('id', repoIds)
     : { data: [] };
 
   return res.status(200).send({

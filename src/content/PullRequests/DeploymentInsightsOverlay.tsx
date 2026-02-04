@@ -36,6 +36,7 @@ import { percent } from '@/utils/datatype';
 import { depFn } from '@/utils/fn';
 
 import { DeploymentItem } from './DeploymentItem';
+import { PrBreakdownAndInsights } from './TeamInsightsBody';
 
 enum DepStatusFilter {
   All,
@@ -475,6 +476,12 @@ export const DeploymentInsightsOverlay = () => {
                       <Line small>Selected Deployment</Line>
                       <DeploymentItem dep={selectedDep} selected={true} />
                     </FlexBox>
+                    {prs.length > 0 && (
+                      <>
+                        <Divider />
+                        <PrBreakdownAndInsights prs={prs} />
+                      </>
+                    )}
                     <Divider />
                     <FlexBox col gap1 maxWidth={'100%'} overflow={'auto'}>
                       {loadingPrs ? (

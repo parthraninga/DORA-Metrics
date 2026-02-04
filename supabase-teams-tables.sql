@@ -7,10 +7,10 @@ create table if not exists public.teams (
   created_at timestamptz default now()
 );
 
--- Junction table: team_id, repo_id, created_at (many-to-many teams <-> Repos)
+-- Junction table: team_id, repo_id, created_at (many-to-many teams <-> repos)
 create table if not exists public.team_repos (
   team_id uuid not null references public.teams(id) on delete cascade,
-  repo_id uuid not null references public."Repos"(id) on delete cascade,
+  repo_id uuid not null references public.repos(id) on delete cascade,
   created_at timestamptz default now(),
   primary key (team_id, repo_id)
 );

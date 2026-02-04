@@ -3,7 +3,7 @@
 -- pull_requests: from deployments.related_prs
 create table if not exists public.pull_requests (
   id uuid primary key default gen_random_uuid(),
-  repo_id uuid not null references public."Repos"(id) on delete cascade,
+  repo_id uuid not null references public.repos(id) on delete cascade,
   fetch_data_id uuid not null references public.fetch_data(id) on delete cascade,
   pr_no bigint not null,
   title text,
@@ -36,7 +36,7 @@ create index if not exists idx_pull_requests_fetch_data_id on public.pull_reques
 -- workflow_runs: from Lambda workflow_runs array
 create table if not exists public.workflow_runs (
   id uuid primary key default gen_random_uuid(),
-  repo_id uuid not null references public."Repos"(id) on delete cascade,
+  repo_id uuid not null references public.repos(id) on delete cascade,
   fetch_data_id uuid not null references public.fetch_data(id) on delete cascade,
   run_id bigint,
   name text,
@@ -57,7 +57,7 @@ create index if not exists idx_workflow_runs_run_id on public.workflow_runs(run_
 -- incidents: derived from workflow_runs (failure = creation, next success = resolved)
 create table if not exists public.incidents (
   id uuid primary key default gen_random_uuid(),
-  repo_id uuid not null references public."Repos"(id) on delete cascade,
+  repo_id uuid not null references public.repos(id) on delete cascade,
   fetch_data_id uuid not null references public.fetch_data(id) on delete cascade,
   pull_request_id uuid references public.pull_requests(id) on delete set null,
   workflow_run_id bigint not null,

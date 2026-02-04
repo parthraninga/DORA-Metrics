@@ -19,15 +19,21 @@ const postSchema = yup.object({
 const endpoint = new Endpoint(nullSchema);
 
 endpoint.handle.GET(getSchema, async (_req, res) => {
-  const { data, error } = await supabaseServer
-    .from('Repos')
-    .select('*')
-    .order('created_at', { ascending: false });
+  try {
+    const { data, error } = await supabaseServer
+      .from('repos')
+      .select('*')
+      .order('created_at', { ascending: false });
 
-  if (error) {
-    return res.status(500).send({ error: error.message });
+    if (error) {
+      console.warn('[GET /api/repos] Supabase error:', error.message);
+      return res.status(200).send([]);
+    }
+    return res.status(200).send(data || []);
+  } catch (e) {
+    console.warn('[GET /api/repos] Error:', e instanceof Error ? e.message : e);
+    return res.status(200).send([]);
   }
-  return res.status(200).send(data || []);
 });
 
 endpoint.handle.POST(postSchema, async (req, res) => {
@@ -56,7 +62,7 @@ endpoint.handle.POST(postSchema, async (req, res) => {
   if (cfr_type === 'PR_MERGE' && pr_merge_config != null) insert.pr_merge_config = pr_merge_config;
 
   const { data, error } = await supabaseServer
-    .from('Repos')
+    .from('repos')
     .insert(insert)
     .select()
     .single();
