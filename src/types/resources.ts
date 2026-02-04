@@ -909,8 +909,25 @@ export type RevertedAndOriginalPrPair = {
   original_reverted_pr: BasePR;
 };
 
+/** Workflow run row for "all workflow runs in period" (CFR / Deployments with incidents). */
+export type WorkflowRunInPeriod = {
+  id: string;
+  repo_id: string;
+  run_id: number | null;
+  name: string | null;
+  head_branch: string | null;
+  conclusion: string | null;
+  status: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  html_url: string | null;
+  repo_name?: string;
+};
+
 export type IncidentApiResponseType = {
   deployments_with_incidents: DeploymentWithIncidents[];
+  /** All workflow runs in the date range for the team's repos (Supabase path). Used when no incidents to show what data exists. */
+  workflow_runs_in_period?: WorkflowRunInPeriod[];
   revert_prs: PR[];
   summary_prs: PR[];
 };

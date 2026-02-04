@@ -223,11 +223,13 @@ export const WeeklyDeliveryVolumeCard = () => {
                     <DoraMetricsComparisonPill
                       val={deploymentFrequencyProps.count}
                       against={deploymentFrequencyProps.prev}
-                      prevFormat={(val) =>
-                        `${Math.round(val)} ${pluralize('deployment', val)}/${
+                      prevFormat={(val) => {
+                        const r = Math.round(val * 100) / 100;
+                        const s = r % 1 === 0 ? `${r}` : r.toFixed(2);
+                        return `${s} ${pluralize('deployment', val)}/${
                           deploymentFrequencyProps.interval
-                        } `
-                      }
+                        } `;
+                      }}
                       positive={true}
                       boxed
                       light
@@ -323,7 +325,10 @@ export const WeeklyDeliveryVolumeCard = () => {
 
 const getDeploymentCountString = (count: number, totalDeployments: number) => {
   if (totalDeployments === 0) return 'No Deployments';
-  if (count) return `${count}`;
+  if (count) {
+    const rounded = Math.round(count * 100) / 100;
+    return rounded % 1 === 0 ? `${rounded}` : rounded.toFixed(2);
+  }
 
   // backend doesn't send decimals, so if total deps exist, count cannot be zero, it's less than 1
   return '<1';

@@ -13,6 +13,8 @@ import {
   getLeadTimeFromSupabase,
   getLeadTimePRsFromSupabase,
   getLeadTimeTrendsFromSupabase,
+  getMeanTimeToRestoreFromSupabase,
+  getMeanTimeToRestoreTrendsFromSupabase,
   getTeamRepoIds,
   getTeamReposBranchMap,
   type SupabaseLeadTimePRRow
@@ -42,6 +44,7 @@ function buildDeploymentFrequencyStatsFromSupabase(
   current: SupabaseDeploymentFrequencyResult,
   previous: SupabaseDeploymentFrequencyResult
 ): TeamDoraMetricsApiResponseType['deployment_frequency_stats'] {
+  const round2 = (n: number) => Math.round(n * 100) / 100;
   const toStats = (data: SupabaseDeploymentFrequencyResult, prevDuration?: 'day' | 'week' | 'month') => {
     const {
       total_deployments,
@@ -50,22 +53,21 @@ function buildDeploymentFrequencyStatsFromSupabase(
       avg_monthly_deployment_frequency
     } = data;
     let duration: 'day' | 'week' | 'month' = prevDuration ?? 'month';
-    let avg_deployment_frequency = avg_monthly_deployment_frequency;
+    let avg_deployment_frequency = round2(avg_monthly_deployment_frequency);
     if (avg_daily_deployment_frequency >= 1) {
       duration = 'day';
-      avg_deployment_frequency = avg_daily_deployment_frequency;
+      avg_deployment_frequency = round2(avg_daily_deployment_frequency);
     } else if (avg_weekly_deployment_frequency >= 1) {
       duration = 'week';
-      avg_deployment_frequency = avg_weekly_deployment_frequency;
+      avg_deployment_frequency = round2(avg_weekly_deployment_frequency);
     } else {
-      duration = 'month';
-      avg_deployment_frequency = avg_monthly_deployment_frequency;
+      avg_deployment_frequency = round2(avg_monthly_deployment_frequency);
     }
     return {
       total_deployments,
-      avg_daily_deployment_frequency,
-      avg_weekly_deployment_frequency,
-      avg_monthly_deployment_frequency,
+      avg_daily_deployment_frequency: round2(avg_daily_deployment_frequency),
+      avg_weekly_deployment_frequency: round2(avg_weekly_deployment_frequency),
+      avg_monthly_deployment_frequency: round2(avg_monthly_deployment_frequency),
       avg_deployment_frequency,
       duration,
     };
@@ -139,6 +141,10 @@ endpoint.handle.GET(getSchema, async (req, res) => {
       cfrPrev,
       cfrTrendsCurrent,
       cfrTrendsPrev,
+      mttrCurrent,
+      mttrPrev,
+      mttrTrendsCurrent,
+      mttrTrendsPrev,
       repoIds,
       leadTimePRsRows,
       leadTimeTrendsCurrent,
@@ -177,6 +183,20 @@ endpoint.handle.GET(getSchema, async (req, res) => {
       ),
       getChangeFailureRateTrendsFromSupabase(supabaseServer, teamId, currStart, currEnd),
       getChangeFailureRateTrendsFromSupabase(
+        supabaseServer,
+        teamId,
+        prevCycleStartDay,
+        prevCycleEndDay
+      ),
+      getMeanTimeToRestoreFromSupabase(supabaseServer, teamId, currStart, currEnd),
+      getMeanTimeToRestoreFromSupabase(
+        supabaseServer,
+        teamId,
+        prevCycleStartDay,
+        prevCycleEndDay
+      ),
+      getMeanTimeToRestoreTrendsFromSupabase(supabaseServer, teamId, currStart, currEnd),
+      getMeanTimeToRestoreTrendsFromSupabase(
         supabaseServer,
         teamId,
         prevCycleStartDay,
@@ -233,7 +253,7 @@ endpoint.handle.GET(getSchema, async (req, res) => {
     const { data: reposRows } =
       repoIds.length > 0
         ? await supabaseServer
-            .from('Repos')
+            .from('repos')
             .select('id, repo_name, org_name')
             .in('id', repoIds)
         : { data: [] };
@@ -256,12 +276,12 @@ endpoint.handle.GET(getSchema, async (req, res) => {
         previous: leadTimeTrendsPrev ?? {}
       },
       mean_time_to_restore_stats: {
-        current: { mean_time_to_recovery: 0, incident_count: 0 },
-        previous: { mean_time_to_recovery: 0, incident_count: 0 }
+        current: mttrCurrent,
+        previous: mttrPrev
       },
       mean_time_to_restore_trends: {
-        current: {},
-        previous: {}
+        current: mttrTrendsCurrent ?? {},
+        previous: mttrTrendsPrev ?? {}
       },
       change_failure_rate_stats: {
         current: cfrCurrent,

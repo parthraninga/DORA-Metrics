@@ -13,6 +13,7 @@ import {
   DeploymentWithIncidents,
   IncidentsWithDeploymentResponseType,
   IncidentApiResponseType,
+  WorkflowRunInPeriod,
   ChangeTimeModes,
   ActiveBranchMode
 } from '@/types/resources';
@@ -35,6 +36,8 @@ export type State = StateFetchConfig<{
   ai_summary_token: string;
   allReposAssignedToTeam: (Row<'TeamRepos'> & Row<'OrgRepo'>)[];
   all_deployments: DeploymentWithIncidents[];
+  /** All workflow runs in period (team repos, date range). Set when Supabase path returns it; used when no incidents to show what data exists. */
+  workflow_runs_in_period: WorkflowRunInPeriod[];
   resolved_incidents: IncidentsWithDeploymentResponseType[];
   team_deployments: TeamDeploymentsApiResponse;
   prs_map: Record<string, PR>;
@@ -63,6 +66,7 @@ const initialState: State = {
   ai_summary_token: '',
   allReposAssignedToTeam: [],
   all_deployments: [],
+  workflow_runs_in_period: [],
   resolved_incidents: [],
   team_deployments: {
     deployments_map: {},
@@ -132,6 +136,7 @@ export const doraMetricsSlice = createSlice({
       'all_deployments',
       (state, action) => {
         state.all_deployments = action.payload.deployments_with_incidents;
+        state.workflow_runs_in_period = action.payload.workflow_runs_in_period ?? [];
         state.revert_prs = action.payload.revert_prs;
         // TODO: Impement when summary PRs are available
         // state.summary_prs = action.payload.summary_prs;

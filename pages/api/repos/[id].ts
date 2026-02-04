@@ -24,7 +24,7 @@ endpoint.handle.GET(nullSchema, async (req, res) => {
   const { id } = req.payload;
 
   const { data, error } = await supabaseServer
-    .from('Repos')
+    .from('repos')
     .select('*')
     .eq('id', id)
     .single();
@@ -66,7 +66,7 @@ endpoint.handle.PATCH(patchSchema, async (req, res) => {
   }
 
   const { data, error } = await supabaseServer
-    .from('Repos')
+    .from('repos')
     .update(updates)
     .eq('id', id)
     .select()

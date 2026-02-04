@@ -1,6 +1,7 @@
--- Run in Supabase SQL Editor. Creates public.Repos for Sync Repos page.
+-- Run in Supabase SQL Editor. Creates public.repos for Sync Repos page.
+-- Use lowercase name so Supabase schema cache and .from('repos') work.
 
-create table if not exists public."Repos" (
+create table if not exists public.repos (
   id uuid primary key default gen_random_uuid(),
   repo_name text not null,
   created_at timestamptz default now(),

@@ -56,7 +56,11 @@ export const AuthProvider: FC = (props) => {
     return axios
       .get('/api/auth/session')
       .then((r) => r.data)
-      .then(sessionState.set);
+      .then(sessionState.set)
+      .catch((err) => {
+        console.warn('[Auth] Session fetch failed, using empty org:', err?.response?.status ?? err?.message);
+        sessionState.set({ org: {} });
+      });
   }, [sessionState.set]);
 
   useEffect(() => {

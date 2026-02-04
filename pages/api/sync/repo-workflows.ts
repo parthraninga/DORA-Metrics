@@ -14,7 +14,7 @@ endpoint.handle.GET(getSchema, async (req, res) => {
   const { token_id, org_name, repo_name } = req.payload;
 
   const { data: tokenRow, error: tokenError } = await supabaseServer
-    .from('Tokens')
+    .from('tokens')
     .select('token, type')
     .eq('id', token_id)
     .single();

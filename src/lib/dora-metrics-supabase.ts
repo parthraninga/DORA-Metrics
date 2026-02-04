@@ -54,7 +54,7 @@ export async function getTeamReposBranchMap(
   const repoIds = await getTeamRepoIds(supabase, teamId);
   if (repoIds.length === 0) return {};
   const { data, error } = await supabase
-    .from('Repos')
+    .from('repos')
     .select('id, dev_branch, stage_branch, prod_branch')
     .in('id', repoIds);
   if (error || !data) return {};
@@ -214,9 +214,10 @@ export async function getDeploymentFrequencyFromSupabase(
   }
   const total_deployments = rows.length;
   const days = Math.max(1, differenceInDays(toDate, fromDate) + 1);
-  const avg_daily_deployment_frequency = total_deployments / days;
-  const avg_weekly_deployment_frequency = total_deployments / (days / 7);
-  const avg_monthly_deployment_frequency = total_deployments / (days / 30);
+  const round2 = (n: number) => Math.round(n * 100) / 100;
+  const avg_daily_deployment_frequency = round2(total_deployments / days);
+  const avg_weekly_deployment_frequency = round2(total_deployments / (days / 7));
+  const avg_monthly_deployment_frequency = round2(total_deployments / (days / 30));
 
   return {
     total_deployments,
@@ -276,7 +277,8 @@ export async function getDeploymentFrequencyTrendsFromSupabase(
 
 /**
  * Change Failure Rate = (incidents in range / workflow_runs in range) × 100.
- * Both incidents and workflow_runs filtered by team repos and created_at in [fromDate, toDate].
+ * Incidents are filtered by creation_date (when the failure occurred); workflow_runs by created_at.
+ * An incident = a run with conclusion = 'failure' followed by conclusion = 'success' (resolved).
  */
 export async function getChangeFailureRateFromSupabase(
   supabase: SupabaseClient,
@@ -301,8 +303,9 @@ export async function getChangeFailureRateFromSupabase(
       .from('incidents')
       .select('*', { count: 'exact', head: true })
       .in('repo_id', repoIds)
-      .gte('created_at', fromStr)
-      .lte('created_at', toStr),
+      .not('creation_date', 'is', null)
+      .gte('creation_date', fromStr)
+      .lte('creation_date', toStr),
     supabase
       .from('workflow_runs')
       .select('*', { count: 'exact', head: true })
@@ -315,7 +318,7 @@ export async function getChangeFailureRateFromSupabase(
   const total_deployments = workflowRunsResult.count ?? 0;
   const change_failure_rate =
     total_deployments > 0
-      ? (failed_deployments / total_deployments) * 100
+      ? Math.round((failed_deployments / total_deployments) * 10000) / 100
       : 0;
 
   return {
@@ -332,7 +335,7 @@ export type ChangeFailureRateTrendsMap = Record<
 >;
 
 /**
- * Per-day CFR: for each day, count incidents and workflow_runs with created_at on that day, then rate.
+ * Per-day CFR: for each day, count incidents by creation_date and workflow_runs by created_at, then rate.
  */
 export async function getChangeFailureRateTrendsFromSupabase(
   supabase: SupabaseClient,
@@ -349,10 +352,11 @@ export async function getChangeFailureRateTrendsFromSupabase(
   const [incidentsRows, workflowRunsRows] = await Promise.all([
     supabase
       .from('incidents')
-      .select('created_at')
+      .select('creation_date')
       .in('repo_id', repoIds)
-      .gte('created_at', fromStr)
-      .lte('created_at', toStr),
+      .not('creation_date', 'is', null)
+      .gte('creation_date', fromStr)
+      .lte('creation_date', toStr),
     supabase
       .from('workflow_runs')
       .select('created_at')
@@ -372,8 +376,8 @@ export async function getChangeFailureRateTrendsFromSupabase(
     if (!byDate[dateStr]) byDate[dateStr] = { failed: 0, total: 0 };
     byDate[dateStr].total += 1;
   }
-  for (const r of (incidentsRows.data || []) as { created_at?: string | null }[]) {
-    const dateStr = r.created_at ? format(parseISO(r.created_at), 'yyyy-MM-dd') : '';
+  for (const r of (incidentsRows.data || []) as { creation_date?: string | null }[]) {
+    const dateStr = r.creation_date ? format(parseISO(r.creation_date), 'yyyy-MM-dd') : '';
     if (!dateStr) continue;
     if (!byDate[dateStr]) byDate[dateStr] = { failed: 0, total: 0 };
     byDate[dateStr].failed += 1;
@@ -387,6 +391,112 @@ export async function getChangeFailureRateTrendsFromSupabase(
       change_failure_rate: total > 0 ? (failed / total) * 100 : 0,
       failed_deployments: failed,
       total_deployments: total,
+    };
+  }
+  return out;
+}
+
+export type SupabaseMeanTimeToRestoreResult = {
+  mean_time_to_recovery: number;
+  incident_count: number;
+};
+
+/**
+ * Mean Time to Recovery = mean(resolved_date - creation_date) in seconds for incidents
+ * where both creation_date and resolved_date exist, filtered by team repos and creation_date in [fromDate, toDate].
+ * Incidents are derived from workflow_runs (ascending by created_at): conclusion = 'failure' = incident start;
+ * the next workflow run with conclusion = 'success' gives resolved_date (time to recovery = resolved_date - creation_date).
+ */
+export async function getMeanTimeToRestoreFromSupabase(
+  supabase: SupabaseClient,
+  teamId: string,
+  fromDate: Date,
+  toDate: Date
+): Promise<SupabaseMeanTimeToRestoreResult> {
+  const repoIds = await getTeamRepoIds(supabase, teamId);
+  if (repoIds.length === 0) {
+    return { mean_time_to_recovery: 0, incident_count: 0 };
+  }
+
+  const fromStr = fromDate.toISOString();
+  const toStr = toDate.toISOString();
+
+  const { data: rows, error } = await supabase
+    .from('incidents')
+    .select('creation_date, resolved_date')
+    .in('repo_id', repoIds)
+    .gte('creation_date', fromStr)
+    .lte('creation_date', toStr)
+    .not('creation_date', 'is', null)
+    .not('resolved_date', 'is', null);
+
+  if (error || !rows || rows.length === 0) {
+    return { mean_time_to_recovery: 0, incident_count: 0 };
+  }
+
+  let sumSeconds = 0;
+  let count = 0;
+  for (const r of rows as { creation_date: string | null; resolved_date: string | null }[]) {
+    const created = r.creation_date ? new Date(r.creation_date).getTime() : NaN;
+    const resolved = r.resolved_date ? new Date(r.resolved_date).getTime() : NaN;
+    if (Number.isFinite(created) && Number.isFinite(resolved) && resolved >= created) {
+      sumSeconds += (resolved - created) / 1000;
+      count += 1;
+    }
+  }
+
+  const mean_time_to_recovery = count > 0 ? sumSeconds / count : 0;
+  return { mean_time_to_recovery, incident_count: count };
+}
+
+export type MeanTimeToRestoreTrendsMap = Record<
+  string,
+  SupabaseMeanTimeToRestoreResult
+>;
+
+/**
+ * Per-day MTTR: for each day (by creation_date), mean(resolved_date - creation_date) in seconds.
+ */
+export async function getMeanTimeToRestoreTrendsFromSupabase(
+  supabase: SupabaseClient,
+  teamId: string,
+  fromDate: Date,
+  toDate: Date
+): Promise<MeanTimeToRestoreTrendsMap> {
+  const repoIds = await getTeamRepoIds(supabase, teamId);
+  if (repoIds.length === 0) return {};
+
+  const fromStr = fromDate.toISOString();
+  const toStr = toDate.toISOString();
+
+  const { data: rows, error } = await supabase
+    .from('incidents')
+    .select('creation_date, resolved_date')
+    .in('repo_id', repoIds)
+    .gte('creation_date', fromStr)
+    .lte('creation_date', toStr)
+    .not('creation_date', 'is', null)
+    .not('resolved_date', 'is', null);
+
+  if (error || !rows || rows.length === 0) return {};
+
+  const byDate: Record<string, { sumSeconds: number; count: number }> = {};
+  for (const r of rows as { creation_date: string | null; resolved_date: string | null }[]) {
+    const created = r.creation_date ? new Date(r.creation_date).getTime() : NaN;
+    const resolved = r.resolved_date ? new Date(r.resolved_date).getTime() : NaN;
+    if (!Number.isFinite(created) || !Number.isFinite(resolved) || resolved < created) continue;
+    const dateStr = r.creation_date ? format(parseISO(r.creation_date), 'yyyy-MM-dd') : '';
+    if (!dateStr) continue;
+    if (!byDate[dateStr]) byDate[dateStr] = { sumSeconds: 0, count: 0 };
+    byDate[dateStr].sumSeconds += (resolved - created) / 1000;
+    byDate[dateStr].count += 1;
+  }
+
+  const out: MeanTimeToRestoreTrendsMap = {};
+  for (const [dateStr, agg] of Object.entries(byDate)) {
+    out[dateStr] = {
+      mean_time_to_recovery: agg.count > 0 ? agg.sumSeconds / agg.count : 0,
+      incident_count: agg.count,
     };
   }
   return out;
@@ -461,7 +571,7 @@ export async function getLeadTimePRsFromSupabase(
 
   const repoIdsUnique = [...new Set(prRows.map((r) => r.repo_id))];
   const { data: reposData } = await supabase
-    .from('Repos')
+    .from('repos')
     .select('id, repo_name')
     .in('id', repoIdsUnique);
   const repoNameById: Record<string, string> = {};

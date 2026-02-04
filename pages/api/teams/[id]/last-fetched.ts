@@ -22,7 +22,7 @@ endpoint.handle.GET(nullSchema, async (req, res) => {
   }
 
   const { data: repos } = await supabaseServer
-    .from('Repos')
+    .from('repos')
     .select('last_fetched_at')
     .in('id', repoIds);
 
