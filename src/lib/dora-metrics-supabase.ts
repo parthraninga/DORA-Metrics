@@ -39,16 +39,64 @@ export async function getTeamRepoIds(
   return (data as { repo_id: string }[]).map((r) => r.repo_id);
 }
 
+export type RepoBranchMap = Record<
+  string,
+  { dev_branch: string | null; stage_branch: string | null; prod_branch: string | null }
+>;
+
+/**
+ * Get per-repo branch names (dev_branch, stage_branch, prod_branch) from Repos for team's repos.
+ */
+export async function getTeamReposBranchMap(
+  supabase: SupabaseClient,
+  teamId: string
+): Promise<RepoBranchMap> {
+  const repoIds = await getTeamRepoIds(supabase, teamId);
+  if (repoIds.length === 0) return {};
+  const { data, error } = await supabase
+    .from('Repos')
+    .select('id, dev_branch, stage_branch, prod_branch')
+    .in('id', repoIds);
+  if (error || !data) return {};
+  const map: RepoBranchMap = {};
+  for (const r of data as { id: string; dev_branch?: string | null; stage_branch?: string | null; prod_branch?: string | null }[]) {
+    map[r.id] = {
+      dev_branch: r.dev_branch ?? null,
+      stage_branch: r.stage_branch ?? null,
+      prod_branch: r.prod_branch ?? null
+    };
+  }
+  return map;
+}
+
+function filterRowsByBranchMode<T extends { repo_id: string; base_branch?: string | null }>(
+  rows: T[],
+  branchMode: 'PROD' | 'STAGE' | 'DEV',
+  repoBranchMap: RepoBranchMap
+): T[] {
+  const key = branchMode === 'PROD' ? 'prod_branch' : branchMode === 'STAGE' ? 'stage_branch' : 'dev_branch';
+  return rows.filter((row) => {
+    const allowed = repoBranchMap[row.repo_id]?.[key];
+    return allowed != null && allowed !== '' && (row.base_branch ?? '') === allowed;
+  });
+}
+
+export type BranchFilterOptions = {
+  branchMode: 'PROD' | 'STAGE' | 'DEV';
+  repoBranchMap: RepoBranchMap;
+};
+
 /**
  * Lead Time = mean of (first_commit_to_open + cycle_time) for pull_requests
  * where state = 'MERGED' and updated_at in [fromDate, toDate], repo_id in team's repos.
- * Returns stats in the same shape as LeadTimeApiResponse (other fields zeroed).
+ * If branchFilter is provided, only PRs with base_branch matching the repo's prod/stage/dev branch are included.
  */
 export async function getLeadTimeFromSupabase(
   supabase: SupabaseClient,
   teamId: string,
   fromDate: Date,
-  toDate: Date
+  toDate: Date,
+  branchFilter?: BranchFilterOptions
 ): Promise<SupabaseLeadTimeResult> {
   const repoIds = await getTeamRepoIds(supabase, teamId);
   if (repoIds.length === 0) {
@@ -66,15 +114,23 @@ export async function getLeadTimeFromSupabase(
   const fromStr = fromDate.toISOString();
   const toStr = toDate.toISOString();
 
-  const { data: rows, error } = await supabase
+  const selectFields = branchFilter
+    ? 'first_commit_to_open, cycle_time, repo_id, base_branch'
+    : 'first_commit_to_open, cycle_time';
+  const { data: rawRows, error } = await supabase
     .from('pull_requests')
-    .select('first_commit_to_open, cycle_time')
+    .select(selectFields)
     .in('repo_id', repoIds)
     .eq('state', 'MERGED')
     .gte('updated_at', fromStr)
     .lte('updated_at', toStr);
 
-  if (error || !rows || rows.length === 0) {
+  let rows = (rawRows || []) as { first_commit_to_open?: number | null; cycle_time?: number | null; repo_id?: string; base_branch?: string | null }[];
+  if (branchFilter && rows.length > 0) {
+    rows = filterRowsByBranchMode(rows, branchFilter.branchMode, branchFilter.repoBranchMap);
+  }
+
+  if (error || rows.length === 0) {
     return {
       lead_time: 0,
       first_commit_to_open: 0,
@@ -86,7 +142,7 @@ export async function getLeadTimeFromSupabase(
     };
   }
 
-  const prs = rows as { first_commit_to_open?: number | null; cycle_time?: number | null }[];
+  const prs = rows;
   let sumLeadTime = 0;
   let sumFirstCommitToOpen = 0;
   for (const pr of prs) {
@@ -112,13 +168,14 @@ export async function getLeadTimeFromSupabase(
 
 /**
  * Deployment Frequency = count of PRs (state MERGED, updated_at in range) / time.
- * total_deployments = count, avg_daily = count/days, avg_weekly = count/(days/7), avg_monthly = count/(days/30).
+ * If branchFilter is provided, only PRs with base_branch matching the repo's prod/stage/dev branch are counted.
  */
 export async function getDeploymentFrequencyFromSupabase(
   supabase: SupabaseClient,
   teamId: string,
   fromDate: Date,
-  toDate: Date
+  toDate: Date,
+  branchFilter?: BranchFilterOptions
 ): Promise<SupabaseDeploymentFrequencyResult> {
   const repoIds = await getTeamRepoIds(supabase, teamId);
   if (repoIds.length === 0) {
@@ -133,9 +190,10 @@ export async function getDeploymentFrequencyFromSupabase(
   const fromStr = fromDate.toISOString();
   const toStr = toDate.toISOString();
 
-  const { count, error } = await supabase
+  const selectFields = branchFilter ? 'repo_id, base_branch' : '*';
+  const { data: rawRows, error } = await supabase
     .from('pull_requests')
-    .select('*', { count: 'exact', head: true })
+    .select(selectFields)
     .in('repo_id', repoIds)
     .eq('state', 'MERGED')
     .gte('updated_at', fromStr)
@@ -150,7 +208,11 @@ export async function getDeploymentFrequencyFromSupabase(
     };
   }
 
-  const total_deployments = count ?? 0;
+  let rows = (rawRows || []) as { repo_id?: string; base_branch?: string | null }[];
+  if (branchFilter && rows.length > 0) {
+    rows = filterRowsByBranchMode(rows, branchFilter.branchMode, branchFilter.repoBranchMap);
+  }
+  const total_deployments = rows.length;
   const days = Math.max(1, differenceInDays(toDate, fromDate) + 1);
   const avg_daily_deployment_frequency = total_deployments / days;
   const avg_weekly_deployment_frequency = total_deployments / (days / 7);
@@ -168,13 +230,14 @@ export async function getDeploymentFrequencyFromSupabase(
 export type DeploymentFrequencyTrendsMap = Record<string, { count: number }>;
 
 /**
- * Per-day count of MERGED PRs (same filter: team repos, updated_at in range, state MERGED).
+ * Per-day count of MERGED PRs. If branchFilter provided, only PRs with base_branch matching repo's prod/stage/dev.
  */
 export async function getDeploymentFrequencyTrendsFromSupabase(
   supabase: SupabaseClient,
   teamId: string,
   fromDate: Date,
-  toDate: Date
+  toDate: Date,
+  branchFilter?: BranchFilterOptions
 ): Promise<DeploymentFrequencyTrendsMap> {
   const repoIds = await getTeamRepoIds(supabase, teamId);
   if (repoIds.length === 0) return {};
@@ -182,18 +245,24 @@ export async function getDeploymentFrequencyTrendsFromSupabase(
   const fromStr = fromDate.toISOString();
   const toStr = toDate.toISOString();
 
-  const { data: rows, error } = await supabase
+  const selectFields = branchFilter ? 'updated_at, repo_id, base_branch' : 'updated_at';
+  const { data: rawRows, error } = await supabase
     .from('pull_requests')
-    .select('updated_at')
+    .select(selectFields)
     .in('repo_id', repoIds)
     .eq('state', 'MERGED')
     .gte('updated_at', fromStr)
     .lte('updated_at', toStr);
 
-  if (error || !rows || rows.length === 0) return {};
+  if (error || !rawRows || rawRows.length === 0) return {};
+
+  let rows = rawRows as { updated_at?: string | null; repo_id?: string; base_branch?: string | null }[];
+  if (branchFilter && rows.length > 0) {
+    rows = filterRowsByBranchMode(rows, branchFilter.branchMode, branchFilter.repoBranchMap);
+  }
 
   const byDate: Record<string, number> = {};
-  for (const r of rows as { updated_at?: string | null }[]) {
+  for (const r of rows) {
     const dateStr = r.updated_at ? format(parseISO(r.updated_at), 'yyyy-MM-dd') : '';
     if (!dateStr) continue;
     byDate[dateStr] = (byDate[dateStr] ?? 0) + 1;
@@ -360,12 +429,14 @@ export type LeadTimeTrendsMap = Record<
 
 /**
  * Fetch merged PRs in date range for team with repo name, for lead time "see details" (PR list).
+ * If branchFilter provided, only PRs with base_branch matching repo's prod/stage/dev are returned.
  */
 export async function getLeadTimePRsFromSupabase(
   supabase: SupabaseClient,
   teamId: string,
   fromDate: Date,
-  toDate: Date
+  toDate: Date,
+  branchFilter?: BranchFilterOptions
 ): Promise<SupabaseLeadTimePRRow[]> {
   const repoIds = await getTeamRepoIds(supabase, teamId);
   if (repoIds.length === 0) return [];
@@ -373,7 +444,7 @@ export async function getLeadTimePRsFromSupabase(
   const fromStr = fromDate.toISOString();
   const toStr = toDate.toISOString();
 
-  const { data: prRows, error } = await supabase
+  const { data: rawPrRows, error } = await supabase
     .from('pull_requests')
     .select('id, repo_id, pr_no, title, author, first_commit_to_open, cycle_time, created_at, updated_at, state, base_branch, head_branch, commits, additions, deletions, comments')
     .in('repo_id', repoIds)
@@ -381,9 +452,14 @@ export async function getLeadTimePRsFromSupabase(
     .gte('updated_at', fromStr)
     .lte('updated_at', toStr);
 
-  if (error || !prRows || prRows.length === 0) return [];
+  if (error || !rawPrRows || rawPrRows.length === 0) return [];
 
-  const repoIdsUnique = [...new Set((prRows as { repo_id: string }[]).map((r) => r.repo_id))];
+  let prRows = rawPrRows as SupabaseLeadTimePRRow[];
+  if (branchFilter && prRows.length > 0) {
+    prRows = filterRowsByBranchMode(prRows, branchFilter.branchMode, branchFilter.repoBranchMap);
+  }
+
+  const repoIdsUnique = [...new Set(prRows.map((r) => r.repo_id))];
   const { data: reposData } = await supabase
     .from('Repos')
     .select('id, repo_name')
@@ -400,13 +476,14 @@ export async function getLeadTimePRsFromSupabase(
 }
 
 /**
- * Build lead time trends (per-day aggregates) for chart. Date key = YYYY-MM-DD.
+ * Build lead time trends (per-day aggregates) for chart. If branchFilter provided, only PRs with base_branch matching repo's prod/stage/dev.
  */
 export async function getLeadTimeTrendsFromSupabase(
   supabase: SupabaseClient,
   teamId: string,
   fromDate: Date,
-  toDate: Date
+  toDate: Date,
+  branchFilter?: BranchFilterOptions
 ): Promise<LeadTimeTrendsMap> {
   const repoIds = await getTeamRepoIds(supabase, teamId);
   if (repoIds.length === 0) return {};
@@ -414,22 +491,28 @@ export async function getLeadTimeTrendsFromSupabase(
   const fromStr = fromDate.toISOString();
   const toStr = toDate.toISOString();
 
-  const { data: rows, error } = await supabase
+  const selectFields = branchFilter ? 'first_commit_to_open, cycle_time, updated_at, repo_id, base_branch' : 'first_commit_to_open, cycle_time, updated_at';
+  const { data: rawRows, error } = await supabase
     .from('pull_requests')
-    .select('first_commit_to_open, cycle_time, updated_at')
+    .select(selectFields)
     .in('repo_id', repoIds)
     .eq('state', 'MERGED')
     .gte('updated_at', fromStr)
     .lte('updated_at', toStr);
 
-  if (error || !rows || rows.length === 0) return {};
+  if (error || !rawRows || rawRows.length === 0) return {};
+
+  let rows = rawRows as { first_commit_to_open?: number | null; cycle_time?: number | null; updated_at?: string | null; repo_id?: string; base_branch?: string | null }[];
+  if (branchFilter && rows.length > 0) {
+    rows = filterRowsByBranchMode(rows, branchFilter.branchMode, branchFilter.repoBranchMap);
+  }
 
   const byDate: Record<
     string,
     { leadTimeSum: number; fcoSum: number; cycleSum: number; count: number }
   > = {};
 
-  for (const r of rows as { first_commit_to_open?: number | null; cycle_time?: number | null; updated_at?: string | null }[]) {
+  for (const r of rows) {
     const fco = Number(r.first_commit_to_open) || 0;
     const ct = Number(r.cycle_time) || 0;
     const dateStr = r.updated_at ? format(parseISO(r.updated_at), 'yyyy-MM-dd') : '';

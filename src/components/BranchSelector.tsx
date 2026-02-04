@@ -11,9 +11,6 @@ import {
   useTheme,
   Popover
 } from '@mui/material';
-import { useSnackbar } from 'notistack';
-import pluralize from 'pluralize';
-import { trim } from 'ramda';
 import { FC, useCallback, useRef } from 'react';
 
 import GitBranch from '@/assets/git-merge-line.svg';
@@ -21,17 +18,14 @@ import { HeaderBtn } from '@/components/HeaderBtn';
 import { LightTooltip } from '@/components/Shared';
 import { TeamProductionBranchSelector } from '@/components/TeamProductionBranchSelector';
 import { useModal } from '@/contexts/ModalContext';
-import { useBoolState, useEasyState } from '@/hooks/useEasyState';
+import { useBoolState } from '@/hooks/useEasyState';
 import { useStateTeamConfig } from '@/hooks/useStateTeamConfig';
 import { appSlice } from '@/slices/app';
 import { useDispatch, useSelector } from '@/store';
 import { brandColors } from '@/theme/schemes/theme';
 import { ActiveBranchMode } from '@/types/resources';
-import { depFn } from '@/utils/fn';
 
-import { ChipInput } from './ChipInput';
 import { MiniButton } from './MiniButton';
-import { Line } from './Text';
 
 export const BranchSelector: FC = () => {
   const theme = useTheme();
@@ -40,49 +34,34 @@ export const BranchSelector: FC = () => {
   const dispatch = useDispatch();
   const { addModal, closeModal } = useModal();
   const { singleTeamId } = useStateTeamConfig();
-  const [mode, names] = useSelector((state) => [
-    state.app.branchMode,
-    state.app.branchNames.split(',').map((name) => name.replace(/^\^/, ''))
-  ]);
+  const mode = useSelector((state) => state.app.branchMode);
   const teamReposProdBranchArray = useSelector(
     (state) => state.app.teamsProdBranchMap?.[singleTeamId]
   );
 
-  const { enqueueSnackbar } = useSnackbar();
-  const isAllMode = mode === ActiveBranchMode.ALL;
-  const isProdMode = mode === ActiveBranchMode.PROD;
+  const isProdMode = mode === ActiveBranchMode.PROD || mode === ActiveBranchMode.ALL || mode === ActiveBranchMode.CUSTOM;
+  const isStageMode = mode === ActiveBranchMode.STAGE;
+  const isDevMode = mode === ActiveBranchMode.DEV;
 
-  const localBranchNames = useEasyState<string[]>(
-    isAllMode || isProdMode ? [] : [...names]
-  );
-
-  const updateStateBranchNames = useCallback(
-    (values: string[]) => {
+  const setBranchModeTo = useCallback(
+    (newMode: ActiveBranchMode.PROD | ActiveBranchMode.STAGE | ActiveBranchMode.DEV) => {
+      const names =
+        newMode === ActiveBranchMode.PROD
+          ? teamReposProdBranchArray?.map((r) => r.prod_branch ?? r.prod_branches?.[0]).filter(Boolean).join(',') ?? ''
+          : newMode === ActiveBranchMode.STAGE
+            ? teamReposProdBranchArray?.map((r) => r.stage_branch).filter(Boolean).join(',') ?? ''
+            : teamReposProdBranchArray?.map((r) => r.dev_branch).filter(Boolean).join(',') ?? '';
       dispatch(
         appSlice.actions.setBranchState({
-          mode: ActiveBranchMode.CUSTOM,
-          names: values.map(trim).join(',')
+          mode: newMode,
+          names
         })
       );
     },
-    [dispatch]
+    [dispatch, teamReposProdBranchArray]
   );
 
-  const setProdStateBranchNames = useCallback(() => {
-    dispatch(
-      appSlice.actions.setBranchState({
-        mode: ActiveBranchMode.PROD,
-        names:
-          teamReposProdBranchArray
-            ?.map((r) => r.prod_branches)
-            .filter(Boolean)
-            .join(',') || ''
-      })
-    );
-    depFn(localBranchNames.set, []);
-  }, [dispatch, teamReposProdBranchArray, localBranchNames.set]);
-
-  const openProductionBranchSelectorModal = useCallback(async () => {
+  const openProductionBranchSelectorModal = useCallback(() => {
     const modal = addModal({
       title: `Set default production branches`,
       body: (
@@ -91,24 +70,6 @@ export const BranchSelector: FC = () => {
       showCloseIcon: true
     });
   }, [addModal, closeModal]);
-
-  const handleBranchNamesInput = useCallback(
-    (values: string[]) => {
-      const lastValue = values[values.length - 1];
-      let isValid = true;
-
-      try {
-        new RegExp(lastValue);
-      } catch (_) {
-        isValid = false;
-      }
-
-      const trimmedValues = values.map((name) => name.replace(/^\^/, ''));
-      if (isValid) depFn(localBranchNames.set, trimmedValues);
-      else depFn(localBranchNames.set, trimmedValues.slice(0, -1));
-    },
-    [localBranchNames.set]
-  );
 
   return (
     <Box>
@@ -131,39 +92,30 @@ export const BranchSelector: FC = () => {
         <LightTooltip
           arrow
           title={
-            isAllMode ? (
-              'Data will be fetched for all branches of each team repo'
-            ) : isProdMode ? (
-              'Data will be fetched for all production branches of each team repo'
-            ) : (
-              <Box>
-                <Box>
-                  {names.length} {pluralize('branch', names.length)} selected
-                </Box>
-                <Box>{names.join(', ')}</Box>
-              </Box>
-            )
+            isProdMode
+              ? 'Lead time & deployment frequency from production branches (Repos.prod_branch)'
+              : isStageMode
+                ? 'Lead time & deployment frequency from stage branches (Repos.stage_branch)'
+                : 'Lead time & deployment frequency from dev branches (Repos.dev_branch)'
           }
         >
           <Typography
             fontWeight="bold"
             color={
               brandColors.branch[
-                isAllMode || isProdMode
-                  ? (ActiveBranchMode.ALL.toLowerCase() as keyof typeof brandColors.branch)
-                  : (ActiveBranchMode.CUSTOM.toLowerCase() as keyof typeof brandColors.branch)
-              ]
+                (isProdMode ? 'prod' : isStageMode ? 'stage' : 'dev') as keyof typeof brandColors.branch
+              ] ?? brandColors.branch.prod
             }
             fontSize="small"
             whiteSpace="nowrap"
             overflow="hidden"
             textOverflow="ellipsis"
           >
-            {isAllMode
-              ? 'All Branches'
-              : isProdMode
-              ? 'Production Branches'
-              : names.join(', ')}
+            {isProdMode
+              ? 'Production branch'
+              : isStageMode
+                ? 'Stage branch'
+                : 'Dev branch'}
           </Typography>
         </LightTooltip>
       </HeaderBtn>
@@ -180,64 +132,13 @@ export const BranchSelector: FC = () => {
         >
           <Option>
             <OptionTitle
-              selected={!isAllMode && !isProdMode}
-              onSelect={() => {
-                if (!localBranchNames.value.length) {
-                  return enqueueSnackbar(
-                    'You need to specify at least one branch to be able to select that.',
-                    { variant: 'warning', autoHideDuration: 5000 }
-                  );
-                }
-                updateStateBranchNames(localBranchNames.value);
-                dispatch(
-                  appSlice.actions.setBranchMode(ActiveBranchMode.CUSTOM)
-                );
-              }}
-            >
-              Use custom branch(es)
-            </OptionTitle>
-
-            <ChipInput
-              placeholder="Branch names"
-              values={localBranchNames.value}
-              onChange={handleBranchNamesInput}
-              onSubmit={updateStateBranchNames}
-            />
-
-            <Box
-              fontSize="smaller"
-              sx={{ userSelect: 'none' }}
-              display="flex"
-              flexDirection="column"
-              gap={1}
-            >
-              <Box color="secondary.dark">
-                Type comma-separated branch names and hit Enter.{' '}
-                <Line bold color="info.dark">
-                  Regex supported.
-                </Line>
-              </Box>
-              <Box>
-                By selecting this, you'll see metrics of these branches for all
-                repos associated with this team.
-              </Box>
-              <Box>
-                If any of the repos don't have any of these branches, you'll see
-                no data for those repos.
-              </Box>
-            </Box>
-          </Option>
-          <Divider sx={{ my: -1 / 2 }} />
-          <Option>
-            <OptionTitle
               selected={isProdMode}
-              onSelect={setProdStateBranchNames}
+              onSelect={() => setBranchModeTo(ActiveBranchMode.PROD)}
             >
-              Production Branches
+              Production branch
             </OptionTitle>
             <Box fontSize="smaller" sx={{ userSelect: 'none' }}>
-              By selecting this, you’ll see metrics from production branches of
-              all repos associated with the team
+              Lead time and deployment frequency from each repo's production branch (Repos.prod_branch).
             </Box>
             <MiniButton
               onClick={openProductionBranchSelectorModal}
@@ -246,29 +147,32 @@ export const BranchSelector: FC = () => {
               sx={{ width: 'fit-content' }}
             >
               {teamReposProdBranchArray?.length
-                ? `View/Edit Branches ->`
-                : `No repos. Click to assign ->`}
+                ? 'View/Edit Branches →'
+                : 'No repos. Click to assign →'}
             </MiniButton>
           </Option>
           <Divider sx={{ my: -1 / 2 }} />
           <Option>
             <OptionTitle
-              selected={isAllMode}
-              onSelect={() => {
-                dispatch(
-                  appSlice.actions.setBranchState({
-                    mode: ActiveBranchMode.ALL,
-                    names: ''
-                  })
-                );
-                depFn(localBranchNames.set, []);
-              }}
+              selected={isStageMode}
+              onSelect={() => setBranchModeTo(ActiveBranchMode.STAGE)}
             >
-              All Branches
+              Stage branch
             </OptionTitle>
             <Box fontSize="smaller" sx={{ userSelect: 'none' }}>
-              By selecting this, you’ll see metrics from all branches of all
-              repos associated with the team
+              Lead time and deployment frequency from each repo's stage branch (Repos.stage_branch).
+            </Box>
+          </Option>
+          <Divider sx={{ my: -1 / 2 }} />
+          <Option>
+            <OptionTitle
+              selected={isDevMode}
+              onSelect={() => setBranchModeTo(ActiveBranchMode.DEV)}
+            >
+              Dev branch
+            </OptionTitle>
+            <Box fontSize="smaller" sx={{ userSelect: 'none' }}>
+              Lead time and deployment frequency from each repo's dev branch (Repos.dev_branch).
             </Box>
           </Option>
         </Box>

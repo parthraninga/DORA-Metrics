@@ -479,6 +479,10 @@ export type TeamRepoBranchDetails = {
   org_repo_id: ID;
   name: string;
   prod_branches: string[] | null;
+  /** From Repos table: exact branch name per repo for DORA filtering */
+  dev_branch?: string | null;
+  stage_branch?: string | null;
+  prod_branch?: string | null;
   is_active: boolean;
 };
 
@@ -596,6 +600,8 @@ export type TeamDoraMetricsApiResponseType = {
 
 export enum ActiveBranchMode {
   'PROD' = 'PROD',
+  'STAGE' = 'STAGE',
+  'DEV' = 'DEV',
   'CUSTOM' = 'CUSTOM',
   'ALL' = 'ALL'
 }

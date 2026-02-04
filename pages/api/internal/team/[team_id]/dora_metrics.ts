@@ -14,6 +14,7 @@ import {
   getLeadTimePRsFromSupabase,
   getLeadTimeTrendsFromSupabase,
   getTeamRepoIds,
+  getTeamReposBranchMap,
   type SupabaseLeadTimePRRow
 } from '@/lib/dora-metrics-supabase';
 import { mockDoraMetrics } from '@/mocks/dora_metrics';
@@ -86,7 +87,7 @@ const getSchema = yup.object().shape({
   branches: yup.string().optional().nullable(),
   from_date: yup.date().required(),
   to_date: yup.date().required(),
-  branch_mode: yup.string().oneOf(Object.values(ActiveBranchMode)).optional().default(ActiveBranchMode.ALL)
+  branch_mode: yup.string().oneOf(Object.values(ActiveBranchMode)).optional().default(ActiveBranchMode.PROD)
 });
 
 const endpoint = new Endpoint(pathSchema);
@@ -116,6 +117,17 @@ endpoint.handle.GET(getSchema, async (req, res) => {
     const currStart = startOfDay(new Date(rawFromDate));
     const currEnd = endOfDay(new Date(rawToDate));
 
+    const branchMode = branch_mode as ActiveBranchMode;
+    const useBranchFilter =
+      branchMode === ActiveBranchMode.PROD ||
+      branchMode === ActiveBranchMode.STAGE ||
+      branchMode === ActiveBranchMode.DEV;
+    const repoBranchMap = await getTeamReposBranchMap(supabaseServer, teamId);
+    const branchFilter =
+      useBranchFilter && Object.keys(repoBranchMap).length > 0
+        ? { branchMode: branchMode as 'PROD' | 'STAGE' | 'DEV', repoBranchMap }
+        : undefined;
+
     const [
       leadTimeCurrent,
       leadTimePrev,
@@ -132,26 +144,29 @@ endpoint.handle.GET(getSchema, async (req, res) => {
       leadTimeTrendsCurrent,
       leadTimeTrendsPrev
     ] = await Promise.all([
-      getLeadTimeFromSupabase(supabaseServer, teamId, currStart, currEnd),
+      getLeadTimeFromSupabase(supabaseServer, teamId, currStart, currEnd, branchFilter),
       getLeadTimeFromSupabase(
         supabaseServer,
         teamId,
         prevCycleStartDay,
-        prevCycleEndDay
+        prevCycleEndDay,
+        branchFilter
       ),
-      getDeploymentFrequencyFromSupabase(supabaseServer, teamId, currStart, currEnd),
+      getDeploymentFrequencyFromSupabase(supabaseServer, teamId, currStart, currEnd, branchFilter),
       getDeploymentFrequencyFromSupabase(
         supabaseServer,
         teamId,
         prevCycleStartDay,
-        prevCycleEndDay
+        prevCycleEndDay,
+        branchFilter
       ),
-      getDeploymentFrequencyTrendsFromSupabase(supabaseServer, teamId, currStart, currEnd),
+      getDeploymentFrequencyTrendsFromSupabase(supabaseServer, teamId, currStart, currEnd, branchFilter),
       getDeploymentFrequencyTrendsFromSupabase(
         supabaseServer,
         teamId,
         prevCycleStartDay,
-        prevCycleEndDay
+        prevCycleEndDay,
+        branchFilter
       ),
       getChangeFailureRateFromSupabase(supabaseServer, teamId, currStart, currEnd),
       getChangeFailureRateFromSupabase(
@@ -168,13 +183,14 @@ endpoint.handle.GET(getSchema, async (req, res) => {
         prevCycleEndDay
       ),
       getTeamRepoIds(supabaseServer, teamId),
-      getLeadTimePRsFromSupabase(supabaseServer, teamId, currStart, currEnd),
-      getLeadTimeTrendsFromSupabase(supabaseServer, teamId, currStart, currEnd),
+      getLeadTimePRsFromSupabase(supabaseServer, teamId, currStart, currEnd, branchFilter),
+      getLeadTimeTrendsFromSupabase(supabaseServer, teamId, currStart, currEnd, branchFilter),
       getLeadTimeTrendsFromSupabase(
         supabaseServer,
         teamId,
         prevCycleStartDay,
-        prevCycleEndDay
+        prevCycleEndDay,
+        branchFilter
       )
     ]);
 

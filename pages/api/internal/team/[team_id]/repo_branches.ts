@@ -62,15 +62,24 @@ endpoint.handle.GET(nullSchema, async (req, res) => {
 
     const { data: reposRows } = await supabaseServer
       .from('Repos')
-      .select('id, repo_name, prod_branch')
+      .select('id, repo_name, prod_branch, stage_branch, dev_branch')
       .in('id', repoIds);
 
     const payload: TeamRepoBranchDetails[] = (reposRows || []).map(
-      (r: { id: string; repo_name: string; prod_branch?: string | null }) => ({
+      (r: {
+        id: string;
+        repo_name: string;
+        prod_branch?: string | null;
+        stage_branch?: string | null;
+        dev_branch?: string | null;
+      }) => ({
         team_id,
         org_repo_id: r.id,
         name: r.repo_name,
         prod_branches: r.prod_branch ? [r.prod_branch] : [],
+        prod_branch: r.prod_branch ?? null,
+        stage_branch: r.stage_branch ?? null,
+        dev_branch: r.dev_branch ?? null,
         is_active: true
       })
     );

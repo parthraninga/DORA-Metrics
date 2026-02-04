@@ -40,7 +40,10 @@ export const brandColors = {
   },
   branch: {
     all: '#5DD8FF',
-    custom: '#D57700'
+    custom: '#D57700',
+    prod: '#D57700',
+    stage: '#33C2FF',
+    dev: '#5DD8FF'
   },
   generic: {
     brown: '#A47F7A',

@@ -188,7 +188,7 @@ export const fetchTeamDoraMetrics = createAsyncThunk(
           from_date: params.fromDate,
           to_date: params.toDate,
           branches: params.branches,
-          branch_mode: params.branch_mode || ActiveBranchMode.ALL
+          branch_mode: params.branch_mode ?? ActiveBranchMode.PROD
         }
       }
     );
