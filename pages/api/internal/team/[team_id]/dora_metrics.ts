@@ -10,6 +10,7 @@ import {
   getChangeFailureRateTrendsFromSupabase,
   getDeploymentFrequencyFromSupabase,
   getDeploymentFrequencyTrendsFromSupabase,
+  getDeploymentPipelineFromSupabase,
   getLeadTimeFromSupabase,
   getLeadTimePRsFromSupabase,
   getLeadTimeTrendsFromSupabase,
@@ -148,7 +149,8 @@ endpoint.handle.GET(getSchema, async (req, res) => {
       repoIds,
       leadTimePRsRows,
       leadTimeTrendsCurrent,
-      leadTimeTrendsPrev
+      leadTimeTrendsPrev,
+      deploymentPipeline
     ] = await Promise.all([
       getLeadTimeFromSupabase(supabaseServer, teamId, currStart, currEnd, branchFilter),
       getLeadTimeFromSupabase(
@@ -211,7 +213,8 @@ endpoint.handle.GET(getSchema, async (req, res) => {
         prevCycleStartDay,
         prevCycleEndDay,
         branchFilter
-      )
+      ),
+      getDeploymentPipelineFromSupabase(supabaseServer, teamId, currStart, currEnd)
     ]);
 
     const lead_time_prs: PR[] = (leadTimePRsRows || []).map(
@@ -301,7 +304,8 @@ endpoint.handle.GET(getSchema, async (req, res) => {
       },
       lead_time_prs,
       assigned_repos,
-      unsynced_repos: []
+      unsynced_repos: [],
+      deployment_pipeline: deploymentPipeline
     } as TeamDoraMetricsApiResponseType);
   }
 
@@ -347,7 +351,8 @@ endpoint.handle.GET(getSchema, async (req, res) => {
     deploymentFreqTrendsCurrent,
     deploymentFreqTrendsPrev,
     leadtimePrs,
-    teamRepos
+    teamRepos,
+    deploymentPipeline
   ] = await Promise.all([
     fetchLeadTimeStats({
       teamId,
@@ -414,7 +419,8 @@ endpoint.handle.GET(getSchema, async (req, res) => {
     getTeamLeadTimePRs(teamId, from_date, to_date, prFilters).then(
       (r) => r.data
     ),
-    getTeamRepos(teamId)
+    getTeamRepos(teamId),
+    getDeploymentPipelineFromSupabase(supabaseServer, teamId, currStart, currEnd)
   ]);
 
   const deploymentFrequencyStats = buildDeploymentFrequencyStatsFromSupabase(
@@ -440,7 +446,8 @@ endpoint.handle.GET(getSchema, async (req, res) => {
     },
     lead_time_prs: leadtimePrs,
     assigned_repos: teamRepos,
-    unsynced_repos: unsyncedRepos
+    unsynced_repos: unsyncedRepos,
+    deployment_pipeline: deploymentPipeline
   } as TeamDoraMetricsApiResponseType);
 });
 

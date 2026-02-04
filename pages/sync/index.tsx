@@ -3,6 +3,7 @@ import { LoadingButton } from '@mui/lab';
 import {
   Autocomplete,
   Button,
+  Chip,
   Dialog,
   DialogActions,
   DialogContent,
@@ -18,7 +19,8 @@ import {
   CircularProgress,
   FormControl,
   InputLabel,
-  Select
+  Select,
+  Tooltip
 } from '@mui/material';
 import { useCallback, useEffect, useState } from 'react';
 import { Authenticated } from 'src/components/Authenticated';
@@ -86,6 +88,8 @@ SyncPage.getLayout = (page: PageLayout) => (
 
 export default SyncPage;
 
+type RedisStatus = 'ok' | 'down' | 'not_configured' | null;
+
 const Content = () => {
   const [list, setList] = useState<RepoRow[]>([]);
   const loading = useBoolState(true);
@@ -93,6 +97,24 @@ const Content = () => {
   const [editRepoId, setEditRepoId] = useState<string | null>(null);
   const editModalOpen = useBoolState(false);
   const [fetchModalRepo, setFetchModalRepo] = useState<RepoRow | null>(null);
+  const [redisStatus, setRedisStatus] = useState<RedisStatus>(null);
+
+  const fetchSyncStatus = useCallback(async () => {
+    try {
+      const data = await handleApi<{ redis: 'ok' | 'down' | 'not_configured' }>(
+        '/sync/status'
+      );
+      setRedisStatus(data?.redis ?? 'not_configured');
+    } catch {
+      setRedisStatus('down');
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchSyncStatus();
+    const interval = setInterval(fetchSyncStatus, 30_000);
+    return () => clearInterval(interval);
+  }, [fetchSyncStatus]);
 
   const fetchList = useCallback(async () => {
     loading.true();
@@ -128,12 +150,48 @@ const Content = () => {
     editModalOpen.true();
   }, [editModalOpen.true]);
 
+  const redisLabel =
+    redisStatus === 'ok'
+      ? 'Redis: connected'
+      : redisStatus === 'down'
+        ? 'Redis: disconnected'
+        : redisStatus === 'not_configured'
+          ? 'Redis: not configured'
+          : 'Redis: checking…';
+
   return (
     <FlexBox col gap2 fill>
-      <FlexBox justifyBetween alignCenter>
-        <Line white fontSize={'24px'}>
-          Repositories
-        </Line>
+      <FlexBox justifyBetween alignCenter flexWrap="wrap" gap={1}>
+        <FlexBox alignCenter gap={2}>
+          <Line white fontSize={'24px'}>
+            Repositories
+          </Line>
+          <Tooltip
+            title={
+              redisStatus === 'ok'
+                ? 'Fetch cache is available. Repeated fetches for the same range may be served from cache.'
+                : redisStatus === 'down'
+                  ? 'Redis is unreachable. Fetch will still work; cache is disabled.'
+                  : redisStatus === 'not_configured'
+                    ? 'Set REDIS_URL in .env to enable fetch cache.'
+                    : 'Checking Redis status…'
+            }
+          >
+            <Chip
+              size="small"
+              label={redisLabel}
+              color={
+                redisStatus === 'ok'
+                  ? 'success'
+                  : redisStatus === 'down'
+                    ? 'error'
+                    : 'default'
+              }
+              variant={redisStatus === 'not_configured' ? 'outlined' : 'filled'}
+              sx={{ cursor: 'default' }}
+            />
+          </Tooltip>
+        </FlexBox>
         <Button variant="contained" startIcon={<AddRounded />} onClick={modalOpen.true}>
           Add Repository
         </Button>

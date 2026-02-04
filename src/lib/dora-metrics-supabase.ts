@@ -69,6 +69,60 @@ export async function getTeamReposBranchMap(
   return map;
 }
 
+export type DeploymentPipelineCounts = {
+  dev: number;
+  stage: number;
+  prod: number;
+};
+
+/**
+ * Count MERGED pull_requests in date range by environment: dev (base_branch = repo's dev_branch),
+ * stage (base_branch = repo's stage_branch), prod (base_branch = repo's prod_branch).
+ * Used for the deployment pipeline funnel; independent of branch dropdown.
+ */
+export async function getDeploymentPipelineFromSupabase(
+  supabase: SupabaseClient,
+  teamId: string,
+  fromDate: Date,
+  toDate: Date
+): Promise<DeploymentPipelineCounts> {
+  const repoIds = await getTeamRepoIds(supabase, teamId);
+  const repoBranchMap = await getTeamReposBranchMap(supabase, teamId);
+  if (repoIds.length === 0) {
+    return { dev: 0, stage: 0, prod: 0 };
+  }
+
+  const fromStr = fromDate.toISOString();
+  const toStr = toDate.toISOString();
+
+  const { data: rows, error } = await supabase
+    .from('pull_requests')
+    .select('repo_id, base_branch')
+    .in('repo_id', repoIds)
+    .eq('state', 'MERGED')
+    .gte('updated_at', fromStr)
+    .lte('updated_at', toStr);
+
+  if (error || !rows) return { dev: 0, stage: 0, prod: 0 };
+
+  let dev = 0;
+  let stage = 0;
+  let prod = 0;
+  for (const row of rows as { repo_id: string; base_branch?: string | null }[]) {
+    const branches = repoBranchMap[row.repo_id];
+    const base = (row.base_branch ?? '').trim();
+    if (!branches) continue;
+    if (branches.dev_branch != null && branches.dev_branch !== '' && base === branches.dev_branch) {
+      dev += 1;
+    } else if (branches.stage_branch != null && branches.stage_branch !== '' && base === branches.stage_branch) {
+      stage += 1;
+    } else if (branches.prod_branch != null && branches.prod_branch !== '' && base === branches.prod_branch) {
+      prod += 1;
+    }
+  }
+  return { dev, stage, prod };
+}
+
 function filterRowsByBranchMode<T extends { repo_id: string; base_branch?: string | null }>(
   rows: T[],
   branchMode: 'PROD' | 'STAGE' | 'DEV',

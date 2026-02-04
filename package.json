@@ -44,6 +44,7 @@
     "fastest-validator": "^1.15.0",
     "fireworks-js": "^2.10.0",
     "framer-motion": "^6.3.3",
+    "ioredis": "^5.3.2",
     "jest": "^29.6.4",
     "jest-environment-jsdom": "^29.6.4",
     "js-cookie": "^3.0.1",

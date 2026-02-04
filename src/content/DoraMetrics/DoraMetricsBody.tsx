@@ -34,6 +34,7 @@ import { ChangeTimeCard } from './DoraCards/ChangeTimeCard';
 import { MeanTimeToRestoreCard } from './DoraCards/MeanTimeToRestoreCard';
 import { DataStillSyncing } from './DoraCards/SkeletalCard';
 import { WeeklyDeliveryVolumeCard } from './DoraCards/WeeklyDeliveryVolumeCard';
+import { DeploymentPipeline } from './DeploymentPipeline';
 
 export const DoraMetricsBody = () => {
   const dispatch = useDispatch();
@@ -113,7 +114,7 @@ export const DoraMetricsBody = () => {
       );
 
   return (
-    <FlexBox col gap2>
+    <FlexBox col gap2 sx={{ width: '100%' }}>
       <FixedContentRefreshLoader show={isLoading} />
       <FlexBox gap={2}>
         {!!stats.avg && <DoraScoreV2 {...stats} />}
@@ -138,30 +139,54 @@ export const DoraMetricsBody = () => {
       </FlexBox>
       <Syncing />
       <Divider />
-      <Grid container spacing={4}>
-        <Grid item xs={12} md={6} order={1}>
-          <ChangeTimeCard />
-        </Grid>
-        <Grid item xs={12} md={6} order={2}>
-          <WeeklyDeliveryVolumeCard />
-        </Grid>
-        <Grid item xs={12} md={6} order={3}>
-          <ChangeFailureRateCard />
-        </Grid>
-        <Grid item xs={12} md={6} order={4}>
-          <MeanTimeToRestoreCard />
-        </Grid>
-      </Grid>
-      <Divider />
-      <FlexBox col gap1 flexGrow={1}>
-        <FlexBox gap={4}>
-          <FlexBox col width="150px">
-            <Line big bold white>
-              Classifications
-            </Line>
-            <Line tiny>Hover to see what each classification means</Line>
+      <FlexBox
+        fullWidth
+        gap={0}
+        sx={{
+          alignItems: 'stretch',
+          flexDirection: { xs: 'column', lg: 'row' }
+        }}
+      >
+        {/* Left: matrix (cards + classifications) — no visible boundary */}
+        <FlexBox col flex={1} minWidth={0} sx={{ overflow: 'hidden', minWidth: 0 }}>
+          <Grid container spacing={4}>
+            <Grid item xs={12} md={6} order={1}>
+              <ChangeTimeCard />
+            </Grid>
+            <Grid item xs={12} md={6} order={2}>
+              <WeeklyDeliveryVolumeCard />
+            </Grid>
+            <Grid item xs={12} md={6} order={3}>
+              <ChangeFailureRateCard />
+            </Grid>
+            <Grid item xs={12} md={6} order={4}>
+              <MeanTimeToRestoreCard />
+            </Grid>
+          </Grid>
+          <Divider sx={{ my: 2 }} />
+          <FlexBox col gap1 flexGrow={1}>
+            <FlexBox gap={4}>
+              <FlexBox col width="150px">
+                <Line big bold white>
+                  Classifications
+                </Line>
+                <Line tiny>Hover to see what each classification means</Line>
+              </FlexBox>
+              <ClassificationPills />
+            </FlexBox>
           </FlexBox>
-          <ClassificationPills />
+        </FlexBox>
+        {/* Right: deployment pipeline (across env, independent of branch dropdown) */}
+        <FlexBox
+          col
+          sx={{
+            width: { xs: '100%', lg: '340px' },
+            flexShrink: 0,
+            pl: { xs: 0, lg: 4 },
+            pt: { xs: 2, lg: 0 }
+          }}
+        >
+          <DeploymentPipeline />
         </FlexBox>
       </FlexBox>
     </FlexBox>
