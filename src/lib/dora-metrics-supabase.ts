@@ -1,0 +1,460 @@
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { differenceInDays, format, parseISO } from 'date-fns';
+
+export type SupabaseLeadTimeResult = {
+  lead_time: number;
+  first_commit_to_open: number;
+  first_response_time: number;
+  rework_time: number;
+  merge_time: number;
+  merge_to_deploy: number;
+  pr_count: number;
+};
+
+export type SupabaseDeploymentFrequencyResult = {
+  total_deployments: number;
+  avg_daily_deployment_frequency: number;
+  avg_weekly_deployment_frequency: number;
+  avg_monthly_deployment_frequency: number;
+};
+
+export type SupabaseChangeFailureRateResult = {
+  change_failure_rate: number;
+  failed_deployments: number;
+  total_deployments: number;
+};
+
+/**
+ * Get team's repo_ids from Supabase team_repos.
+ */
+export async function getTeamRepoIds(
+  supabase: SupabaseClient,
+  teamId: string
+): Promise<string[]> {
+  const { data, error } = await supabase
+    .from('team_repos')
+    .select('repo_id')
+    .eq('team_id', teamId);
+  if (error || !data) return [];
+  return (data as { repo_id: string }[]).map((r) => r.repo_id);
+}
+
+/**
+ * Lead Time = mean of (first_commit_to_open + cycle_time) for pull_requests
+ * where state = 'MERGED' and updated_at in [fromDate, toDate], repo_id in team's repos.
+ * Returns stats in the same shape as LeadTimeApiResponse (other fields zeroed).
+ */
+export async function getLeadTimeFromSupabase(
+  supabase: SupabaseClient,
+  teamId: string,
+  fromDate: Date,
+  toDate: Date
+): Promise<SupabaseLeadTimeResult> {
+  const repoIds = await getTeamRepoIds(supabase, teamId);
+  if (repoIds.length === 0) {
+    return {
+      lead_time: 0,
+      first_commit_to_open: 0,
+      first_response_time: 0,
+      rework_time: 0,
+      merge_time: 0,
+      merge_to_deploy: 0,
+      pr_count: 0,
+    };
+  }
+
+  const fromStr = fromDate.toISOString();
+  const toStr = toDate.toISOString();
+
+  const { data: rows, error } = await supabase
+    .from('pull_requests')
+    .select('first_commit_to_open, cycle_time')
+    .in('repo_id', repoIds)
+    .eq('state', 'MERGED')
+    .gte('updated_at', fromStr)
+    .lte('updated_at', toStr);
+
+  if (error || !rows || rows.length === 0) {
+    return {
+      lead_time: 0,
+      first_commit_to_open: 0,
+      first_response_time: 0,
+      rework_time: 0,
+      merge_time: 0,
+      merge_to_deploy: 0,
+      pr_count: 0,
+    };
+  }
+
+  const prs = rows as { first_commit_to_open?: number | null; cycle_time?: number | null }[];
+  let sumLeadTime = 0;
+  let sumFirstCommitToOpen = 0;
+  for (const pr of prs) {
+    const fco = Number(pr.first_commit_to_open) || 0;
+    const ct = Number(pr.cycle_time) || 0;
+    sumLeadTime += fco + ct;
+    sumFirstCommitToOpen += fco;
+  }
+  const n = prs.length;
+  const lead_time = n > 0 ? sumLeadTime / n : 0;
+  const first_commit_to_open = n > 0 ? sumFirstCommitToOpen / n : 0;
+
+  return {
+    lead_time,
+    first_commit_to_open,
+    first_response_time: 0,
+    rework_time: 0,
+    merge_time: 0,
+    merge_to_deploy: 0,
+    pr_count: n,
+  };
+}
+
+/**
+ * Deployment Frequency = count of PRs (state MERGED, updated_at in range) / time.
+ * total_deployments = count, avg_daily = count/days, avg_weekly = count/(days/7), avg_monthly = count/(days/30).
+ */
+export async function getDeploymentFrequencyFromSupabase(
+  supabase: SupabaseClient,
+  teamId: string,
+  fromDate: Date,
+  toDate: Date
+): Promise<SupabaseDeploymentFrequencyResult> {
+  const repoIds = await getTeamRepoIds(supabase, teamId);
+  if (repoIds.length === 0) {
+    return {
+      total_deployments: 0,
+      avg_daily_deployment_frequency: 0,
+      avg_weekly_deployment_frequency: 0,
+      avg_monthly_deployment_frequency: 0,
+    };
+  }
+
+  const fromStr = fromDate.toISOString();
+  const toStr = toDate.toISOString();
+
+  const { count, error } = await supabase
+    .from('pull_requests')
+    .select('*', { count: 'exact', head: true })
+    .in('repo_id', repoIds)
+    .eq('state', 'MERGED')
+    .gte('updated_at', fromStr)
+    .lte('updated_at', toStr);
+
+  if (error) {
+    return {
+      total_deployments: 0,
+      avg_daily_deployment_frequency: 0,
+      avg_weekly_deployment_frequency: 0,
+      avg_monthly_deployment_frequency: 0,
+    };
+  }
+
+  const total_deployments = count ?? 0;
+  const days = Math.max(1, differenceInDays(toDate, fromDate) + 1);
+  const avg_daily_deployment_frequency = total_deployments / days;
+  const avg_weekly_deployment_frequency = total_deployments / (days / 7);
+  const avg_monthly_deployment_frequency = total_deployments / (days / 30);
+
+  return {
+    total_deployments,
+    avg_daily_deployment_frequency,
+    avg_weekly_deployment_frequency,
+    avg_monthly_deployment_frequency,
+  };
+}
+
+/** Deployment frequency trends: date string -> { count }. */
+export type DeploymentFrequencyTrendsMap = Record<string, { count: number }>;
+
+/**
+ * Per-day count of MERGED PRs (same filter: team repos, updated_at in range, state MERGED).
+ */
+export async function getDeploymentFrequencyTrendsFromSupabase(
+  supabase: SupabaseClient,
+  teamId: string,
+  fromDate: Date,
+  toDate: Date
+): Promise<DeploymentFrequencyTrendsMap> {
+  const repoIds = await getTeamRepoIds(supabase, teamId);
+  if (repoIds.length === 0) return {};
+
+  const fromStr = fromDate.toISOString();
+  const toStr = toDate.toISOString();
+
+  const { data: rows, error } = await supabase
+    .from('pull_requests')
+    .select('updated_at')
+    .in('repo_id', repoIds)
+    .eq('state', 'MERGED')
+    .gte('updated_at', fromStr)
+    .lte('updated_at', toStr);
+
+  if (error || !rows || rows.length === 0) return {};
+
+  const byDate: Record<string, number> = {};
+  for (const r of rows as { updated_at?: string | null }[]) {
+    const dateStr = r.updated_at ? format(parseISO(r.updated_at), 'yyyy-MM-dd') : '';
+    if (!dateStr) continue;
+    byDate[dateStr] = (byDate[dateStr] ?? 0) + 1;
+  }
+  const out: DeploymentFrequencyTrendsMap = {};
+  for (const [dateStr, count] of Object.entries(byDate)) {
+    out[dateStr] = { count };
+  }
+  return out;
+}
+
+/**
+ * Change Failure Rate = (incidents in range / workflow_runs in range) × 100.
+ * Both incidents and workflow_runs filtered by team repos and created_at in [fromDate, toDate].
+ */
+export async function getChangeFailureRateFromSupabase(
+  supabase: SupabaseClient,
+  teamId: string,
+  fromDate: Date,
+  toDate: Date
+): Promise<SupabaseChangeFailureRateResult> {
+  const repoIds = await getTeamRepoIds(supabase, teamId);
+  if (repoIds.length === 0) {
+    return {
+      change_failure_rate: 0,
+      failed_deployments: 0,
+      total_deployments: 0,
+    };
+  }
+
+  const fromStr = fromDate.toISOString();
+  const toStr = toDate.toISOString();
+
+  const [incidentsResult, workflowRunsResult] = await Promise.all([
+    supabase
+      .from('incidents')
+      .select('*', { count: 'exact', head: true })
+      .in('repo_id', repoIds)
+      .gte('created_at', fromStr)
+      .lte('created_at', toStr),
+    supabase
+      .from('workflow_runs')
+      .select('*', { count: 'exact', head: true })
+      .in('repo_id', repoIds)
+      .gte('created_at', fromStr)
+      .lte('created_at', toStr),
+  ]);
+
+  const failed_deployments = incidentsResult.count ?? 0;
+  const total_deployments = workflowRunsResult.count ?? 0;
+  const change_failure_rate =
+    total_deployments > 0
+      ? (failed_deployments / total_deployments) * 100
+      : 0;
+
+  return {
+    change_failure_rate,
+    failed_deployments,
+    total_deployments,
+  };
+}
+
+/** Change failure rate trends: date string -> { change_failure_rate, failed_deployments, total_deployments }. */
+export type ChangeFailureRateTrendsMap = Record<
+  string,
+  SupabaseChangeFailureRateResult
+>;
+
+/**
+ * Per-day CFR: for each day, count incidents and workflow_runs with created_at on that day, then rate.
+ */
+export async function getChangeFailureRateTrendsFromSupabase(
+  supabase: SupabaseClient,
+  teamId: string,
+  fromDate: Date,
+  toDate: Date
+): Promise<ChangeFailureRateTrendsMap> {
+  const repoIds = await getTeamRepoIds(supabase, teamId);
+  if (repoIds.length === 0) return {};
+
+  const fromStr = fromDate.toISOString();
+  const toStr = toDate.toISOString();
+
+  const [incidentsRows, workflowRunsRows] = await Promise.all([
+    supabase
+      .from('incidents')
+      .select('created_at')
+      .in('repo_id', repoIds)
+      .gte('created_at', fromStr)
+      .lte('created_at', toStr),
+    supabase
+      .from('workflow_runs')
+      .select('created_at')
+      .in('repo_id', repoIds)
+      .gte('created_at', fromStr)
+      .lte('created_at', toStr),
+  ]);
+
+  const byDate: Record<
+    string,
+    { failed: number; total: number }
+  > = {};
+
+  for (const r of (workflowRunsRows.data || []) as { created_at?: string | null }[]) {
+    const dateStr = r.created_at ? format(parseISO(r.created_at), 'yyyy-MM-dd') : '';
+    if (!dateStr) continue;
+    if (!byDate[dateStr]) byDate[dateStr] = { failed: 0, total: 0 };
+    byDate[dateStr].total += 1;
+  }
+  for (const r of (incidentsRows.data || []) as { created_at?: string | null }[]) {
+    const dateStr = r.created_at ? format(parseISO(r.created_at), 'yyyy-MM-dd') : '';
+    if (!dateStr) continue;
+    if (!byDate[dateStr]) byDate[dateStr] = { failed: 0, total: 0 };
+    byDate[dateStr].failed += 1;
+  }
+
+  const out: ChangeFailureRateTrendsMap = {};
+  for (const [dateStr, agg] of Object.entries(byDate)) {
+    const total = agg.total;
+    const failed = agg.failed;
+    out[dateStr] = {
+      change_failure_rate: total > 0 ? (failed / total) * 100 : 0,
+      failed_deployments: failed,
+      total_deployments: total,
+    };
+  }
+  return out;
+}
+
+/** Minimal PR-like shape for lead time details (see details overlay). */
+export type SupabaseLeadTimePRRow = {
+  id: string;
+  repo_id: string;
+  pr_no: number;
+  title: string | null;
+  author: string | null;
+  first_commit_to_open: number | null;
+  cycle_time: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+  state: string | null;
+  base_branch: string | null;
+  head_branch: string | null;
+  commits: number | null;
+  additions: number | null;
+  deletions: number | null;
+  comments: number | null;
+  repo_name?: string;
+};
+
+/** Lead time trends: date string -> { lead_time, first_commit_to_open, ..., pr_count }. */
+export type LeadTimeTrendsMap = Record<
+  string,
+  {
+    lead_time: number;
+    first_commit_to_open: number;
+    first_response_time: number;
+    rework_time: number;
+    merge_time: number;
+    merge_to_deploy: number;
+    pr_count: number;
+  }
+>;
+
+/**
+ * Fetch merged PRs in date range for team with repo name, for lead time "see details" (PR list).
+ */
+export async function getLeadTimePRsFromSupabase(
+  supabase: SupabaseClient,
+  teamId: string,
+  fromDate: Date,
+  toDate: Date
+): Promise<SupabaseLeadTimePRRow[]> {
+  const repoIds = await getTeamRepoIds(supabase, teamId);
+  if (repoIds.length === 0) return [];
+
+  const fromStr = fromDate.toISOString();
+  const toStr = toDate.toISOString();
+
+  const { data: prRows, error } = await supabase
+    .from('pull_requests')
+    .select('id, repo_id, pr_no, title, author, first_commit_to_open, cycle_time, created_at, updated_at, state, base_branch, head_branch, commits, additions, deletions, comments')
+    .in('repo_id', repoIds)
+    .eq('state', 'MERGED')
+    .gte('updated_at', fromStr)
+    .lte('updated_at', toStr);
+
+  if (error || !prRows || prRows.length === 0) return [];
+
+  const repoIdsUnique = [...new Set((prRows as { repo_id: string }[]).map((r) => r.repo_id))];
+  const { data: reposData } = await supabase
+    .from('Repos')
+    .select('id, repo_name')
+    .in('id', repoIdsUnique);
+  const repoNameById: Record<string, string> = {};
+  (reposData || []).forEach((r: { id: string; repo_name: string }) => {
+    repoNameById[r.id] = r.repo_name ?? '';
+  });
+
+  return (prRows as SupabaseLeadTimePRRow[]).map((pr) => ({
+    ...pr,
+    repo_name: repoNameById[pr.repo_id] ?? ''
+  }));
+}
+
+/**
+ * Build lead time trends (per-day aggregates) for chart. Date key = YYYY-MM-DD.
+ */
+export async function getLeadTimeTrendsFromSupabase(
+  supabase: SupabaseClient,
+  teamId: string,
+  fromDate: Date,
+  toDate: Date
+): Promise<LeadTimeTrendsMap> {
+  const repoIds = await getTeamRepoIds(supabase, teamId);
+  if (repoIds.length === 0) return {};
+
+  const fromStr = fromDate.toISOString();
+  const toStr = toDate.toISOString();
+
+  const { data: rows, error } = await supabase
+    .from('pull_requests')
+    .select('first_commit_to_open, cycle_time, updated_at')
+    .in('repo_id', repoIds)
+    .eq('state', 'MERGED')
+    .gte('updated_at', fromStr)
+    .lte('updated_at', toStr);
+
+  if (error || !rows || rows.length === 0) return {};
+
+  const byDate: Record<
+    string,
+    { leadTimeSum: number; fcoSum: number; cycleSum: number; count: number }
+  > = {};
+
+  for (const r of rows as { first_commit_to_open?: number | null; cycle_time?: number | null; updated_at?: string | null }[]) {
+    const fco = Number(r.first_commit_to_open) || 0;
+    const ct = Number(r.cycle_time) || 0;
+    const dateStr = r.updated_at ? format(parseISO(r.updated_at), 'yyyy-MM-dd') : '';
+    if (!dateStr) continue;
+    if (!byDate[dateStr]) {
+      byDate[dateStr] = { leadTimeSum: 0, fcoSum: 0, cycleSum: 0, count: 0 };
+    }
+    byDate[dateStr].leadTimeSum += fco + ct;
+    byDate[dateStr].fcoSum += fco;
+    byDate[dateStr].cycleSum += ct;
+    byDate[dateStr].count += 1;
+  }
+
+  const out: LeadTimeTrendsMap = {};
+  for (const [dateStr, agg] of Object.entries(byDate)) {
+    const n = agg.count;
+    out[dateStr] = {
+      lead_time: n > 0 ? agg.leadTimeSum / n : 0,
+      first_commit_to_open: n > 0 ? agg.fcoSum / n : 0,
+      first_response_time: 0,
+      rework_time: 0,
+      merge_time: n > 0 ? agg.cycleSum / n : 0,
+      merge_to_deploy: 0,
+      pr_count: n,
+    };
+  }
+  return out;
+}
