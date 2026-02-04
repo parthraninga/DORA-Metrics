@@ -88,7 +88,7 @@ const initialState: State = {
     date.toISOString()
   ) as SerializableDateRange,
   dateMode: defaultDate.preset,
-  branchMode: ActiveBranchMode.ALL,
+  branchMode: ActiveBranchMode.PROD,
   branchNames: '',
   teamsProdBranchMap: {},
   isUpdated: false,
