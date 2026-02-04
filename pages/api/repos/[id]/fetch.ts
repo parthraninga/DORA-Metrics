@@ -1,6 +1,11 @@
 import * as yup from 'yup';
 import { Endpoint, nullSchema } from '@/api-helpers/global';
 import { parseAndStoreFetchResponse } from '@/lib/parse-fetch-response';
+import {
+  FETCH_CACHE_TTL,
+  fetchCacheKey,
+  getRedis,
+} from '@/lib/redis';
 import { supabaseServer } from '@/lib/supabase';
 
 const pathSchema = yup.object({
@@ -77,6 +82,53 @@ endpoint.handle.POST(postSchema, async (req, res) => {
       : {}),
   };
 
+  // Redis: serve from cache when available
+  const redis = getRedis();
+  const cacheKey = fetchCacheKey(repoId, fromTime, toTime);
+  if (redis) {
+    try {
+      const cached = await redis.get(cacheKey);
+      if (cached) {
+        let rawResponse: unknown;
+        try {
+          rawResponse = JSON.parse(cached);
+        } catch {
+          // invalid cache, fall through to Lambda
+        }
+        if (typeof rawResponse !== 'undefined') {
+          const { data: fd, error: insertErr } = await supabaseServer
+            .from('fetch_data')
+            .insert({
+              repo_id: repoId,
+              state: 'success',
+              raw_response: rawResponse,
+            })
+            .select('id')
+            .single();
+          if (!insertErr && fd) {
+            const fetchDataId = (fd as { id: string }).id;
+            await parseAndStoreFetchResponse(
+              supabaseServer,
+              rawResponse,
+              repoId,
+              fetchDataId
+            );
+            await supabaseServer
+              .from('repos')
+              .update({ last_fetched_at: toTime })
+              .eq('id', repoId);
+            return res.status(202).send({
+              message: 'Fetch completed (from cache)',
+              repo_id: repoId,
+            });
+          }
+        }
+      }
+    } catch {
+      // Redis error: fall through to Lambda
+    }
+  }
+
   const { data: fd, error: insertErr } = await supabaseServer
     .from('fetch_data')
     .insert({
@@ -114,6 +166,21 @@ endpoint.handle.POST(postSchema, async (req, res) => {
         .eq('id', fetchDataId);
 
       if (state === 'success') {
+        try {
+          const r = getRedis();
+          if (r) {
+            await r.set(
+              fetchCacheKey(repoId, fromTime, toTime),
+              typeof rawResponse === 'string'
+                ? rawResponse
+                : JSON.stringify(rawResponse),
+              'EX',
+              FETCH_CACHE_TTL
+            );
+          }
+        } catch {
+          // ignore Redis set errors
+        }
         await parseAndStoreFetchResponse(
           supabaseServer,
           rawResponse,
