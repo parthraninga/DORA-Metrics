@@ -677,98 +677,73 @@ const AddRepoModal = ({
             </Select>
           </FormControl>
 
-          {isGitHub && tokenId.value ? (
-            <FormControl fullWidth disabled={loadingOrgs.value}>
-              <InputLabel id="sync-org-label" shrink>Organisation</InputLabel>
-              <Select
-                labelId="sync-org-label"
-                value={orgName.value}
-                label="Organisation"
-                onChange={(e) => orgName.set(e.target.value)}
-                displayEmpty
-                renderValue={(v) =>
-                  v ? v : loadingOrgs.value ? 'Loading organisations...' : 'Select organisation'
+          <Autocomplete
+            freeSolo
+            fullWidth
+            options={orgOptions.value.map((o) => o.login)}
+            value={orgName.value}
+            onInputChange={(_, newValue) => orgName.set(newValue)}
+            loading={loadingOrgs.value}
+            disabled={!tokenId.value}
+            renderInput={(params) => (
+              <TextField
+                {...params}
+                label="Organisation or user name"
+                placeholder="Type or select organisation"
+                helperText={
+                  loadingOrgs.value
+                    ? 'Loading organisations...'
+                    : isGitHub && orgOptions.value.length === 0
+                    ? 'No organisations found. You can still type an org or username manually.'
+                    : 'Select from list or type manually'
                 }
-              >
-                {loadingOrgs.value ? (
-                  <MenuItem disabled value="">
-                    <FlexBox alignCenter gap={1}>
-                      <CircularProgress size={16} />
-                      Loading organisations...
-                    </FlexBox>
-                  </MenuItem>
-                ) : orgOptions.value.length === 0 ? (
-                  <MenuItem disabled value="">
-                    No organisations found (token may need read:org scope)
-                  </MenuItem>
-                ) : (
-                  orgOptions.value.map((o) => (
-                    <MenuItem key={o.id} value={o.login}>
-                      {o.login}
-                    </MenuItem>
-                  ))
-                )}
-              </Select>
-              {loadingOrgs.value && (
-                <Line tiny secondary sx={{ mt: 0.5 }}>Loading organisations...</Line>
-              )}
-              {!loadingOrgs.value && orgOptions.value.length === 0 && (
-                <Line tiny secondary sx={{ mt: 0.5 }}>
-                  No organisations found. Ensure your PAT has read:org scope. Use the field below to type an org or user name.
-                </Line>
-              )}
-            </FormControl>
-          ) : null}
-          {(!isGitHub || !tokenId.value || (isGitHub && !loadingOrgs.value && orgOptions.value.length === 0)) && (
-            <TextField
-              fullWidth
-              label="Organisation or user name"
-              value={orgName.value}
-              onChange={(e) => orgName.set(e.target.value)}
-              placeholder="e.g. my-org or username"
-              disabled={isGitHub && loadingOrgs.value}
-            />
-          )}
+                InputProps={{
+                  ...params.InputProps,
+                  endAdornment: (
+                    <>
+                      {loadingOrgs.value ? <CircularProgress color="inherit" size={20} /> : null}
+                      {params.InputProps.endAdornment}
+                    </>
+                  ),
+                }}
+              />
+            )}
+          />
 
-          <FormControl fullWidth disabled={!isGitHub || !orgName.value.trim() || loadingRepos.value}>
-            <InputLabel id="sync-repo-name-label" shrink>Repo Name</InputLabel>
-            <Select
-              labelId="sync-repo-name-label"
-              value={repoName.value}
-              label="Repo Name"
-              onChange={(e) => repoName.set(e.target.value)}
-              displayEmpty
-              renderValue={(v) => (v ? v : loadingRepos.value ? 'Loading repos...' : 'Select repository')}
-            >
-              {loadingRepos.value ? (
-                <MenuItem disabled value="">
-                  <FlexBox alignCenter gap={1}>
-                    <CircularProgress size={16} />
-                    Loading repos...
-                  </FlexBox>
-                </MenuItem>
-              ) : repoOptions.value.length === 0 ? (
-                <MenuItem disabled value="">
-                  Couldn&apos;t find any repos
-                </MenuItem>
-              ) : (
-                repoOptions.value.map((r) => (
-                  <MenuItem key={r.id} value={r.name}>
-                    {r.full_name}
-                  </MenuItem>
-                ))
-              )}
-            </Select>
-            {loadingRepos.value && (
-              <Line tiny secondary sx={{ mt: 0.5 }}>Loading repos...</Line>
+          <Autocomplete
+            freeSolo
+            fullWidth
+            options={repoOptions.value.map((r) => r.name)}
+            value={repoName.value}
+            onInputChange={(_, newValue) => repoName.set(newValue)}
+            loading={loadingRepos.value}
+            disabled={!orgName.value.trim()}
+            renderInput={(params) => (
+              <TextField
+                {...params}
+                label="Repository Name"
+                placeholder="Type or select repository"
+                helperText={
+                  loadingRepos.value
+                    ? 'Loading repositories...'
+                    : !isGitHub
+                    ? 'Repo list only available for GitHub tokens. Type manually for other providers.'
+                    : repoOptions.value.length === 0 && orgName.value.trim()
+                    ? 'No repositories found. You can still type manually.'
+                    : 'Select from list or type manually'
+                }
+                InputProps={{
+                  ...params.InputProps,
+                  endAdornment: (
+                    <>
+                      {loadingRepos.value ? <CircularProgress color="inherit" size={20} /> : null}
+                      {params.InputProps.endAdornment}
+                    </>
+                  ),
+                }}
+              />
             )}
-            {!isGitHub && tokenId.value && !loadingRepos.value && (
-              <Line tiny secondary sx={{ mt: 0.5 }}>Org/repo list only available for GitHub tokens</Line>
-            )}
-            {isGitHub && orgName.value.trim() && !loadingRepos.value && repoOptions.value.length === 0 && (
-              <Line tiny secondary sx={{ mt: 0.5 }}>Couldn&apos;t find any repos for this organisation</Line>
-            )}
-          </FormControl>
+          />
 
           <FormControl fullWidth>
             <InputLabel>For Change Failure Rate I want to monitor</InputLabel>
@@ -786,44 +761,44 @@ const AddRepoModal = ({
           </FormControl>
 
           {cfrType.value === 'CI-CD' && (
-            <FormControl
+            <Autocomplete
+              freeSolo
               fullWidth
-              disabled={!repoName.value || loadingWorkflows.value}
-            >
-              <InputLabel id="sync-workflow-label" shrink>Workflow</InputLabel>
-              <Select
-                labelId="sync-workflow-label"
-                value={workflowFile.value}
-                label="Workflow"
-                onChange={(e) => workflowFile.set(e.target.value)}
-                displayEmpty
-                renderValue={(v) =>
-                  v ? v : loadingWorkflows.value ? 'Loading workflows...' : 'Select workflow'
-                }
-              >
-                {loadingWorkflows.value ? (
-                  <MenuItem disabled value="">
-                    <FlexBox alignCenter gap={1}>
-                      <CircularProgress size={16} />
-                      Loading workflows...
-                    </FlexBox>
-                  </MenuItem>
-                ) : workflowOptions.value.length === 0 ? (
-                  <MenuItem disabled value="">
-                    Couldn&apos;t find any workflows
-                  </MenuItem>
-                ) : (
-                  workflowOptions.value.map((w) => (
-                    <MenuItem key={w.id} value={w.path}>
-                      {w.name} ({w.path})
-                    </MenuItem>
-                  ))
-                )}
-              </Select>
-              {loadingWorkflows.value && (
-                <Line tiny secondary sx={{ mt: 0.5 }}>Loading workflows...</Line>
+              options={workflowOptions.value.map((w) => w.path)}
+              getOptionLabel={(option) => {
+                const workflow = workflowOptions.value.find((w) => w.path === option);
+                return workflow ? `${workflow.name} (${workflow.path})` : option;
+              }}
+              value={workflowFile.value}
+              onInputChange={(_, newValue) => workflowFile.set(newValue)}
+              loading={loadingWorkflows.value}
+              disabled={!repoName.value}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  label="Workflow"
+                  placeholder="Type or select workflow"
+                  helperText={
+                    loadingWorkflows.value
+                      ? 'Loading workflows...'
+                      : !isGitHub
+                      ? 'Workflow list only available for GitHub tokens. Type manually for other providers.'
+                      : workflowOptions.value.length === 0 && repoName.value
+                      ? 'No workflows found. You can still type manually (e.g., .github/workflows/deploy.yml)'
+                      : 'Select from list or type manually'
+                  }
+                  InputProps={{
+                    ...params.InputProps,
+                    endAdornment: (
+                      <>
+                        {loadingWorkflows.value ? <CircularProgress color="inherit" size={20} /> : null}
+                        {params.InputProps.endAdornment}
+                      </>
+                    ),
+                  }}
+                />
               )}
-            </FormControl>
+            />
           )}
 
           <Autocomplete
@@ -1072,36 +1047,43 @@ const EditRepoModal = ({
               </FormControl>
 
               {cfrType.value === 'CI-CD' && (
-                <FormControl fullWidth disabled={loadingWorkflows.value}>
-                  <InputLabel id="edit-workflow-label" shrink>Workflow</InputLabel>
-                  <Select
-                    labelId="edit-workflow-label"
-                    value={workflowFile.value}
-                    label="Workflow"
-                    onChange={(e) => workflowFile.set(e.target.value)}
-                    displayEmpty
-                    renderValue={(v) =>
-                      v ? v : loadingWorkflows.value ? 'Loading workflows...' : 'Select workflow'
-                    }
-                  >
-                    {loadingWorkflows.value ? (
-                      <MenuItem disabled value="">
-                        <FlexBox alignCenter gap={1}>
-                          <CircularProgress size={16} />
-                          Loading workflows...
-                        </FlexBox>
-                      </MenuItem>
-                    ) : workflowOptions.value.length === 0 ? (
-                      <MenuItem disabled value="">No workflows found</MenuItem>
-                    ) : (
-                      workflowOptions.value.map((w) => (
-                        <MenuItem key={w.id} value={w.path}>
-                          {w.name} ({w.path})
-                        </MenuItem>
-                      ))
-                    )}
-                  </Select>
-                </FormControl>
+                <Autocomplete
+                  freeSolo
+                  fullWidth
+                  options={workflowOptions.value.map((w) => w.path)}
+                  getOptionLabel={(option) => {
+                    const workflow = workflowOptions.value.find((w) => w.path === option);
+                    return workflow ? `${workflow.name} (${workflow.path})` : option;
+                  }}
+                  value={workflowFile.value}
+                  onInputChange={(_, newValue) => workflowFile.set(newValue)}
+                  loading={loadingWorkflows.value}
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label="Workflow"
+                      placeholder="Type or select workflow"
+                      helperText={
+                        loadingWorkflows.value
+                          ? 'Loading workflows...'
+                          : !isGitHub
+                          ? 'Workflow list only available for GitHub tokens. Type manually for other providers.'
+                          : workflowOptions.value.length === 0
+                          ? 'No workflows found. You can still type manually (e.g., .github/workflows/deploy.yml)'
+                          : 'Select from list or type manually'
+                      }
+                      InputProps={{
+                        ...params.InputProps,
+                        endAdornment: (
+                          <>
+                            {loadingWorkflows.value ? <CircularProgress color="inherit" size={20} /> : null}
+                            {params.InputProps.endAdornment}
+                          </>
+                        ),
+                      }}
+                    />
+                  )}
+                />
               )}
 
               <Autocomplete
