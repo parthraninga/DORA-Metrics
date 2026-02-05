@@ -34,9 +34,9 @@ playwright-report/
 test-results/
 playwright/.cache/
 
-# IDE / Editor (optional; uncomment if you don’t want to commit)
-# .vscode/
-# .idea/
+# IDE / Editor
+.vscode/
+.idea/
 
 # OS
 .DS_Store
