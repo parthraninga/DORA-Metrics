@@ -6,8 +6,8 @@ services:
     runtime: node
     name: dora-metrics
 
-    buildCommand: yarn install && yarn run next build
-    startCommand: yarn start
+    buildCommand: npm install --legacy-peer-deps && npx run build
+    startCommand: npm start
 
     envVars:
       - key: NODE_VERSION
