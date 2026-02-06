@@ -1,0 +1,26 @@
+# Render Blueprint for DORA Metrics (Next.js)
+# https://docs.render.com/blueprint-spec
+
+services:
+  - type: web
+    runtime: node
+    name: dora-metrics
+
+    buildCommand: yarn install && yarn run next build
+    startCommand: yarn start
+
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # Secrets: set in Render Dashboard or use sync: false to be prompted on first deploy
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
+        sync: false
+      # Optional: uncomment and set in Dashboard or use sync: false
+      # - key: REDIS_URL
+      #   sync: false
+      # - key: LAMBDA_FETCH_URL
+      #   sync: false
