@@ -53,7 +53,7 @@ export const PageWrapper: FC<{
             teamDateSelectorMode || (showDate ? 'single' : 'single-only')
           }
           additionalFilters={additionalFilters}
-          selectBranch
+          selectBranch={false}
         >
           {headerChildren}
         </PageHeader>

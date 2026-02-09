@@ -135,6 +135,22 @@ function filterRowsByBranchMode<T extends { repo_id: string; base_branch?: strin
   });
 }
 
+/**
+ * Filter workflow runs by head_branch matching the repo's prod/stage/dev branch.
+ * Used for CFR/MTTR to only count workflow runs from the production/stage/dev branch.
+ */
+function filterWorkflowRunsByBranchMode<T extends { repo_id: string; head_branch?: string | null }>(
+  rows: T[],
+  branchMode: 'PROD' | 'STAGE' | 'DEV',
+  repoBranchMap: RepoBranchMap
+): T[] {
+  const key = branchMode === 'PROD' ? 'prod_branch' : branchMode === 'STAGE' ? 'stage_branch' : 'dev_branch';
+  return rows.filter((row) => {
+    const allowed = repoBranchMap[row.repo_id]?.[key];
+    return allowed != null && allowed !== '' && (row.head_branch ?? '') === allowed;
+  });
+}
+
 export type BranchFilterOptions = {
   branchMode: 'PROD' | 'STAGE' | 'DEV';
   repoBranchMap: RepoBranchMap;
@@ -333,12 +349,14 @@ export async function getDeploymentFrequencyTrendsFromSupabase(
  * Change Failure Rate = (incidents in range / workflow_runs in range) × 100.
  * Incidents are filtered by creation_date (when the failure occurred); workflow_runs by created_at.
  * An incident = a run with conclusion = 'failure' followed by conclusion = 'success' (resolved).
+ * If branchFilter is provided, only workflow runs with head_branch matching the repo's prod/stage/dev branch are counted.
  */
 export async function getChangeFailureRateFromSupabase(
   supabase: SupabaseClient,
   teamId: string,
   fromDate: Date,
-  toDate: Date
+  toDate: Date,
+  branchFilter?: BranchFilterOptions
 ): Promise<SupabaseChangeFailureRateResult> {
   const repoIds = await getTeamRepoIds(supabase, teamId);
   if (repoIds.length === 0) {
@@ -352,24 +370,56 @@ export async function getChangeFailureRateFromSupabase(
   const fromStr = fromDate.toISOString();
   const toStr = toDate.toISOString();
 
-  const [incidentsResult, workflowRunsResult] = await Promise.all([
+  // Fetch workflow runs with head_branch to filter by production branch
+  const selectFields = branchFilter ? 'repo_id, head_branch' : '*';
+  const [incidentsRes, workflowRunsRes] = await Promise.all([
     supabase
       .from('incidents')
-      .select('*', { count: 'exact', head: true })
+      .select(branchFilter ? 'id, repo_id, workflow_run_id' : '*', { count: branchFilter ? undefined : 'exact', head: !branchFilter })
       .in('repo_id', repoIds)
       .not('creation_date', 'is', null)
       .gte('creation_date', fromStr)
       .lte('creation_date', toStr),
     supabase
       .from('workflow_runs')
-      .select('*', { count: 'exact', head: true })
+      .select(selectFields, { count: branchFilter ? undefined : 'exact', head: !branchFilter })
       .in('repo_id', repoIds)
       .gte('created_at', fromStr)
       .lte('created_at', toStr),
   ]);
 
-  const failed_deployments = incidentsResult.count ?? 0;
-  const total_deployments = workflowRunsResult.count ?? 0;
+  let failed_deployments = 0;
+  let total_deployments = 0;
+
+  if (branchFilter) {
+    // Filter workflow runs by head_branch matching production branch
+    let workflowRuns = (workflowRunsRes.data || []) as { repo_id: string; head_branch?: string | null }[];
+    workflowRuns = filterWorkflowRunsByBranchMode(workflowRuns, branchFilter.branchMode, branchFilter.repoBranchMap);
+    total_deployments = workflowRuns.length;
+
+    // For incidents, we need to map workflow_run_id to check if it's from production branch
+    // Fetch the workflow runs for incidents to check their head_branch
+    const incidentRows = (incidentsRes.data || []) as { id: string; repo_id: string; workflow_run_id: number }[];
+    if (incidentRows.length > 0) {
+      const incidentRunIds = incidentRows.map(i => i.workflow_run_id);
+      const { data: incidentWorkflowRuns } = await supabase
+        .from('workflow_runs')
+        .select('run_id, repo_id, head_branch')
+        .in('repo_id', repoIds)
+        .in('run_id', incidentRunIds);
+      
+      const filteredIncidentRuns = filterWorkflowRunsByBranchMode(
+        (incidentWorkflowRuns || []) as { repo_id: string; head_branch?: string | null }[],
+        branchFilter.branchMode,
+        branchFilter.repoBranchMap
+      );
+      failed_deployments = filteredIncidentRuns.length;
+    }
+  } else {
+    failed_deployments = incidentsRes.count ?? 0;
+    total_deployments = workflowRunsRes.count ?? 0;
+  }
+
   const change_failure_rate =
     total_deployments > 0
       ? Math.round((failed_deployments / total_deployments) * 10000) / 100
@@ -390,12 +440,14 @@ export type ChangeFailureRateTrendsMap = Record<
 
 /**
  * Per-day CFR: for each day, count incidents by creation_date and workflow_runs by created_at, then rate.
+ * If branchFilter is provided, only workflow runs with head_branch matching the repo's prod/stage/dev branch are counted.
  */
 export async function getChangeFailureRateTrendsFromSupabase(
   supabase: SupabaseClient,
   teamId: string,
   fromDate: Date,
-  toDate: Date
+  toDate: Date,
+  branchFilter?: BranchFilterOptions
 ): Promise<ChangeFailureRateTrendsMap> {
   const repoIds = await getTeamRepoIds(supabase, teamId);
   if (repoIds.length === 0) return {};
@@ -403,17 +455,20 @@ export async function getChangeFailureRateTrendsFromSupabase(
   const fromStr = fromDate.toISOString();
   const toStr = toDate.toISOString();
 
+  const workflowSelectFields = branchFilter ? 'created_at, repo_id, head_branch' : 'created_at';
+  const incidentSelectFields = branchFilter ? 'creation_date, repo_id, workflow_run_id' : 'creation_date';
+  
   const [incidentsRows, workflowRunsRows] = await Promise.all([
     supabase
       .from('incidents')
-      .select('creation_date')
+      .select(incidentSelectFields)
       .in('repo_id', repoIds)
       .not('creation_date', 'is', null)
       .gte('creation_date', fromStr)
       .lte('creation_date', toStr),
     supabase
       .from('workflow_runs')
-      .select('created_at')
+      .select(workflowSelectFields)
       .in('repo_id', repoIds)
       .gte('created_at', fromStr)
       .lte('created_at', toStr),
@@ -424,13 +479,42 @@ export async function getChangeFailureRateTrendsFromSupabase(
     { failed: number; total: number }
   > = {};
 
-  for (const r of (workflowRunsRows.data || []) as { created_at?: string | null }[]) {
+  // Filter workflow runs by branch if filter provided
+  let filteredWorkflowRuns = (workflowRunsRows.data || []) as { created_at?: string | null; repo_id?: string; head_branch?: string | null }[];
+  if (branchFilter) {
+    filteredWorkflowRuns = filterWorkflowRunsByBranchMode(filteredWorkflowRuns, branchFilter.branchMode, branchFilter.repoBranchMap);
+  }
+
+  for (const r of filteredWorkflowRuns) {
     const dateStr = r.created_at ? format(parseISO(r.created_at), 'yyyy-MM-dd') : '';
     if (!dateStr) continue;
     if (!byDate[dateStr]) byDate[dateStr] = { failed: 0, total: 0 };
     byDate[dateStr].total += 1;
   }
-  for (const r of (incidentsRows.data || []) as { creation_date?: string | null }[]) {
+
+  // Filter incidents by workflow runs on production branch
+  let incidentRowsFiltered = (incidentsRows.data || []) as { creation_date?: string | null; repo_id?: string; workflow_run_id?: number }[];
+  if (branchFilter && incidentRowsFiltered.length > 0) {
+    // Fetch workflow runs for these incidents to check their head_branch
+    const incidentRunIds = incidentRowsFiltered.map(i => i.workflow_run_id).filter(Boolean) as number[];
+    if (incidentRunIds.length > 0) {
+      const { data: incidentWorkflowRuns } = await supabase
+        .from('workflow_runs')
+        .select('run_id, repo_id, head_branch')
+        .in('repo_id', repoIds)
+        .in('run_id', incidentRunIds);
+      
+      const filteredRuns = filterWorkflowRunsByBranchMode(
+        (incidentWorkflowRuns || []) as { run_id?: number; repo_id: string; head_branch?: string | null }[],
+        branchFilter.branchMode,
+        branchFilter.repoBranchMap
+      );
+      const allowedRunIds = new Set(filteredRuns.map((r: any) => r.run_id));
+      incidentRowsFiltered = incidentRowsFiltered.filter(i => i.workflow_run_id && allowedRunIds.has(i.workflow_run_id));
+    }
+  }
+
+  for (const r of incidentRowsFiltered) {
     const dateStr = r.creation_date ? format(parseISO(r.creation_date), 'yyyy-MM-dd') : '';
     if (!dateStr) continue;
     if (!byDate[dateStr]) byDate[dateStr] = { failed: 0, total: 0 };
@@ -460,12 +544,14 @@ export type SupabaseMeanTimeToRestoreResult = {
  * where both creation_date and resolved_date exist, filtered by team repos and creation_date in [fromDate, toDate].
  * Incidents are derived from workflow_runs (ascending by created_at): conclusion = 'failure' = incident start;
  * the next workflow run with conclusion = 'success' gives resolved_date (time to recovery = resolved_date - creation_date).
+ * If branchFilter is provided, only incidents from workflow runs on the prod/stage/dev branch are counted.
  */
 export async function getMeanTimeToRestoreFromSupabase(
   supabase: SupabaseClient,
   teamId: string,
   fromDate: Date,
-  toDate: Date
+  toDate: Date,
+  branchFilter?: BranchFilterOptions
 ): Promise<SupabaseMeanTimeToRestoreResult> {
   const repoIds = await getTeamRepoIds(supabase, teamId);
   if (repoIds.length === 0) {
@@ -475,9 +561,10 @@ export async function getMeanTimeToRestoreFromSupabase(
   const fromStr = fromDate.toISOString();
   const toStr = toDate.toISOString();
 
+  const selectFields = branchFilter ? 'creation_date, resolved_date, repo_id, workflow_run_id' : 'creation_date, resolved_date';
   const { data: rows, error } = await supabase
     .from('incidents')
-    .select('creation_date, resolved_date')
+    .select(selectFields)
     .in('repo_id', repoIds)
     .gte('creation_date', fromStr)
     .lte('creation_date', toStr)
@@ -488,9 +575,31 @@ export async function getMeanTimeToRestoreFromSupabase(
     return { mean_time_to_recovery: 0, incident_count: 0 };
   }
 
+  let filteredRows = rows as { creation_date: string | null; resolved_date: string | null; repo_id?: string; workflow_run_id?: number }[];
+  
+  // Filter incidents by workflow runs on production branch if filter provided
+  if (branchFilter && filteredRows.length > 0) {
+    const incidentRunIds = filteredRows.map(i => i.workflow_run_id).filter(Boolean) as number[];
+    if (incidentRunIds.length > 0) {
+      const { data: incidentWorkflowRuns } = await supabase
+        .from('workflow_runs')
+        .select('run_id, repo_id, head_branch')
+        .in('repo_id', repoIds)
+        .in('run_id', incidentRunIds);
+      
+      const filteredRuns = filterWorkflowRunsByBranchMode(
+        (incidentWorkflowRuns || []) as { run_id?: number; repo_id: string; head_branch?: string | null }[],
+        branchFilter.branchMode,
+        branchFilter.repoBranchMap
+      );
+      const allowedRunIds = new Set(filteredRuns.map((r: any) => r.run_id));
+      filteredRows = filteredRows.filter(i => i.workflow_run_id && allowedRunIds.has(i.workflow_run_id));
+    }
+  }
+
   let sumSeconds = 0;
   let count = 0;
-  for (const r of rows as { creation_date: string | null; resolved_date: string | null }[]) {
+  for (const r of filteredRows) {
     const created = r.creation_date ? new Date(r.creation_date).getTime() : NaN;
     const resolved = r.resolved_date ? new Date(r.resolved_date).getTime() : NaN;
     if (Number.isFinite(created) && Number.isFinite(resolved) && resolved >= created) {
@@ -510,12 +619,14 @@ export type MeanTimeToRestoreTrendsMap = Record<
 
 /**
  * Per-day MTTR: for each day (by creation_date), mean(resolved_date - creation_date) in seconds.
+ * If branchFilter is provided, only incidents from workflow runs on the prod/stage/dev branch are counted.
  */
 export async function getMeanTimeToRestoreTrendsFromSupabase(
   supabase: SupabaseClient,
   teamId: string,
   fromDate: Date,
-  toDate: Date
+  toDate: Date,
+  branchFilter?: BranchFilterOptions
 ): Promise<MeanTimeToRestoreTrendsMap> {
   const repoIds = await getTeamRepoIds(supabase, teamId);
   if (repoIds.length === 0) return {};
@@ -523,9 +634,10 @@ export async function getMeanTimeToRestoreTrendsFromSupabase(
   const fromStr = fromDate.toISOString();
   const toStr = toDate.toISOString();
 
+  const selectFields = branchFilter ? 'creation_date, resolved_date, repo_id, workflow_run_id' : 'creation_date, resolved_date';
   const { data: rows, error } = await supabase
     .from('incidents')
-    .select('creation_date, resolved_date')
+    .select(selectFields)
     .in('repo_id', repoIds)
     .gte('creation_date', fromStr)
     .lte('creation_date', toStr)
@@ -534,8 +646,30 @@ export async function getMeanTimeToRestoreTrendsFromSupabase(
 
   if (error || !rows || rows.length === 0) return {};
 
+  let filteredRows = rows as { creation_date: string | null; resolved_date: string | null; repo_id?: string; workflow_run_id?: number }[];
+  
+  // Filter incidents by workflow runs on production branch if filter provided
+  if (branchFilter && filteredRows.length > 0) {
+    const incidentRunIds = filteredRows.map(i => i.workflow_run_id).filter(Boolean) as number[];
+    if (incidentRunIds.length > 0) {
+      const { data: incidentWorkflowRuns } = await supabase
+        .from('workflow_runs')
+        .select('run_id, repo_id, head_branch')
+        .in('repo_id', repoIds)
+        .in('run_id', incidentRunIds);
+      
+      const filteredRuns = filterWorkflowRunsByBranchMode(
+        (incidentWorkflowRuns || []) as { run_id?: number; repo_id: string; head_branch?: string | null }[],
+        branchFilter.branchMode,
+        branchFilter.repoBranchMap
+      );
+      const allowedRunIds = new Set(filteredRuns.map((r: any) => r.run_id));
+      filteredRows = filteredRows.filter(i => i.workflow_run_id && allowedRunIds.has(i.workflow_run_id));
+    }
+  }
+
   const byDate: Record<string, { sumSeconds: number; count: number }> = {};
-  for (const r of rows as { creation_date: string | null; resolved_date: string | null }[]) {
+  for (const r of filteredRows) {
     const created = r.creation_date ? new Date(r.creation_date).getTime() : NaN;
     const resolved = r.resolved_date ? new Date(r.resolved_date).getTime() : NaN;
     if (!Number.isFinite(created) || !Number.isFinite(resolved) || resolved < created) continue;

@@ -118,24 +118,6 @@ export const DoraMetricsBody = () => {
       <FixedContentRefreshLoader show={isLoading} />
       <FlexBox gap={2}>
         {!!stats.avg && <DoraScoreV2 {...stats} />}
-        <FlexBox fit gap1 ml="auto">
-          <AiButton
-            size="small"
-            startIcon={<AutoGraphRounded />}
-            variant="outlined"
-            onClickCallback={() =>
-              addPage({
-                page: {
-                  ui: 'ai_analysis',
-                  title: 'Analyse your Dora Metrics with AI of your choice'
-                }
-              })
-            }
-          >
-            AI Analysis
-          </AiButton>
-          <DoraMetricsConfigurationSettings />
-        </FlexBox>
       </FlexBox>
       <Syncing />
       <Divider />

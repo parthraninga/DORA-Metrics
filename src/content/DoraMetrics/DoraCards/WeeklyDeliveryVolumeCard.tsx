@@ -136,7 +136,7 @@ export const WeeklyDeliveryVolumeCard = () => {
               }}
             >
               <MetricExternalRead
-                link={`https://www.middlewarehq.com/blog/is-deployment-frequency-the-goldilocks-zone-for-software-delivery`}
+                link={`/Calculating_the_metrics.jpg`}
                 label="Delivery Volume"
               />
             </FlexBox>

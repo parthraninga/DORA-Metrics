@@ -5,6 +5,7 @@ import {
   workFlowFiltersFromTeamProdBranches
 } from '@/api-helpers/team';
 import { ActiveBranchMode, TeamRepoBranchDetails } from '@/types/resources';
+import { uniq } from 'ramda';
 
 export const getBranchesAndRepoFilter = async (params: {
   orgId: ID;
@@ -84,11 +85,36 @@ export const getWorkFlowFilters = (params: {
 export const getWorkFlowFiltersAsPayloadForSingleTeam = async (params: {
   orgId: ID;
   teamId: ID;
+  branchMode?: ActiveBranchMode;
 }) => {
-  const { orgId, teamId } = params;
+  const { orgId, teamId, branchMode = ActiveBranchMode.PROD } = params;
   const teamProdBranchesMap =
     await getAllTeamsReposProdBranchesForOrgAsMap(orgId);
-  return Object.fromEntries(
-    Object.entries(workFlowFiltersFromTeamProdBranches(teamProdBranchesMap))
-  )[teamId];
+  
+  const teamRepos = teamProdBranchesMap[teamId] || [];
+  
+  let headBranches: string[] = [];
+  
+  if (branchMode === ActiveBranchMode.PROD) {
+    // Use prod_branches array for production
+    headBranches = uniq(
+      teamRepos.map((repo) => repo.prod_branches).flat().filter(Boolean) as string[]
+    );
+  } else if (branchMode === ActiveBranchMode.STAGE) {
+    // Use stage_branch individual field for stage
+    headBranches = uniq(
+      teamRepos.map((repo) => repo.stage_branch).filter(Boolean) as string[]
+    );
+  } else if (branchMode === ActiveBranchMode.DEV) {
+    // Use dev_branch individual field for dev
+    headBranches = uniq(
+      teamRepos.map((repo) => repo.dev_branch).filter(Boolean) as string[]
+    );
+  }
+  
+  return {
+    workflow_filter: {
+      head_branches: headBranches
+    }
+  };
 };

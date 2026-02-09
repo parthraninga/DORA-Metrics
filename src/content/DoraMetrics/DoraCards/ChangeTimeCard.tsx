@@ -134,7 +134,7 @@ export const ChangeTimeCard = () => {
                 }}
               >
                 <MetricExternalRead
-                  link={`https://www.middlewarehq.com/blog/lead-time-optimization-101-unlock-software-engineering-efficiency`}
+                  link={`/Calculating_the_metrics.jpg`}
                   label={'Lead Time for Changes'}
                 >
                   {isSufficientDataAvailable &&
