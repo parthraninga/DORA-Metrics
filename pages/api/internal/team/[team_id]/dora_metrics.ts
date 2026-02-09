@@ -176,33 +176,37 @@ endpoint.handle.GET(getSchema, async (req, res) => {
         prevCycleEndDay,
         branchFilter
       ),
-      getChangeFailureRateFromSupabase(supabaseServer, teamId, currStart, currEnd),
+      getChangeFailureRateFromSupabase(supabaseServer, teamId, currStart, currEnd, branchFilter),
       getChangeFailureRateFromSupabase(
         supabaseServer,
         teamId,
         prevCycleStartDay,
-        prevCycleEndDay
+        prevCycleEndDay,
+        branchFilter
       ),
-      getChangeFailureRateTrendsFromSupabase(supabaseServer, teamId, currStart, currEnd),
+      getChangeFailureRateTrendsFromSupabase(supabaseServer, teamId, currStart, currEnd, branchFilter),
       getChangeFailureRateTrendsFromSupabase(
         supabaseServer,
         teamId,
         prevCycleStartDay,
-        prevCycleEndDay
+        prevCycleEndDay,
+        branchFilter
       ),
-      getMeanTimeToRestoreFromSupabase(supabaseServer, teamId, currStart, currEnd),
+      getMeanTimeToRestoreFromSupabase(supabaseServer, teamId, currStart, currEnd, branchFilter),
       getMeanTimeToRestoreFromSupabase(
         supabaseServer,
         teamId,
         prevCycleStartDay,
-        prevCycleEndDay
+        prevCycleEndDay,
+        branchFilter
       ),
-      getMeanTimeToRestoreTrendsFromSupabase(supabaseServer, teamId, currStart, currEnd),
+      getMeanTimeToRestoreTrendsFromSupabase(supabaseServer, teamId, currStart, currEnd, branchFilter),
       getMeanTimeToRestoreTrendsFromSupabase(
         supabaseServer,
         teamId,
         prevCycleStartDay,
-        prevCycleEndDay
+        prevCycleEndDay,
+        branchFilter
       ),
       getTeamRepoIds(supabaseServer, teamId),
       getLeadTimePRsFromSupabase(supabaseServer, teamId, currStart, currEnd, branchFilter),
@@ -326,7 +330,8 @@ endpoint.handle.GET(getSchema, async (req, res) => {
     ),
     getWorkFlowFiltersAsPayloadForSingleTeam({
       orgId: org_id,
-      teamId: teamId
+      teamId: teamId,
+      branchMode: branch_mode as ActiveBranchMode
     })
   ]);
 
@@ -341,6 +346,18 @@ endpoint.handle.GET(getSchema, async (req, res) => {
 
   const currStart = startOfDay(new Date(rawFromDate));
   const currEnd = endOfDay(new Date(rawToDate));
+
+  // Get branch filter for consistent filtering across all metrics
+  const branchMode = branch_mode as ActiveBranchMode;
+  const useBranchFilter =
+    branchMode === ActiveBranchMode.PROD ||
+    branchMode === ActiveBranchMode.STAGE ||
+    branchMode === ActiveBranchMode.DEV;
+  const repoBranchMap = await getTeamReposBranchMap(supabaseServer, teamId);
+  const branchFilterForSupabase =
+    useBranchFilter && Object.keys(repoBranchMap).length > 0
+      ? { branchMode: branchMode as 'PROD' | 'STAGE' | 'DEV', repoBranchMap }
+      : undefined;
 
   const [
     leadTimeResponse,
@@ -397,24 +414,27 @@ endpoint.handle.GET(getSchema, async (req, res) => {
       prFilter: prFilters,
       workflowFilter: workflowFilters
     }),
-    getDeploymentFrequencyFromSupabase(supabaseServer, teamId, currStart, currEnd),
+    getDeploymentFrequencyFromSupabase(supabaseServer, teamId, currStart, currEnd, branchFilterForSupabase),
     getDeploymentFrequencyFromSupabase(
       supabaseServer,
       teamId,
       prevCycleStartDay,
-      prevCycleEndDay
+      prevCycleEndDay,
+      branchFilterForSupabase
     ),
     getDeploymentFrequencyTrendsFromSupabase(
       supabaseServer,
       teamId,
       currStart,
-      currEnd
+      currEnd,
+      branchFilterForSupabase
     ),
     getDeploymentFrequencyTrendsFromSupabase(
       supabaseServer,
       teamId,
       prevCycleStartDay,
-      prevCycleEndDay
+      prevCycleEndDay,
+      branchFilterForSupabase
     ),
     getTeamLeadTimePRs(teamId, from_date, to_date, prFilters).then(
       (r) => r.data

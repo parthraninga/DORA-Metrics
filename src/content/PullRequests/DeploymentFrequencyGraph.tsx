@@ -6,7 +6,7 @@ import { OPEN_IN_NEW_TAB_PROPS } from '@/utils/url';
 
 export const getDoraLink = (text: string) => (
   <Link
-    href={`https://cloud.google.com/blog/products/devops-sre/using-the-four-keys-to-measure-your-devops-performance#:~:text=Calculating%20the%20metrics`}
+    href={`/Calculating_the_metrics.jpg`}
     passHref
     {...OPEN_IN_NEW_TAB_PROPS}
   >

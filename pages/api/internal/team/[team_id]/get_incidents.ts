@@ -5,7 +5,7 @@ import * as yup from 'yup';
 import { handleRequest } from '@/api-helpers/axios';
 import { Endpoint } from '@/api-helpers/global';
 import { updatePrFilterParams } from '@/api-helpers/team';
-import { getTeamRepoIds } from '@/lib/dora-metrics-supabase';
+import { getTeamRepoIds, getTeamReposBranchMap } from '@/lib/dora-metrics-supabase';
 import { supabaseServer } from '@/lib/supabase';
 import { mockDeploymentsWithIncidents } from '@/mocks/incidents';
 import {
@@ -37,11 +37,13 @@ const endpoint = new Endpoint(pathSchema);
 /**
  * Fetch deployments with incidents and all workflow runs in period from Supabase
  * when no org_id (code provider) is linked.
+ * If branchFilter is provided, only workflow runs on the specified branch are included.
  */
 async function getDeploymentsWithIncidentsFromSupabase(
   teamId: string,
   fromDate: Date,
-  toDate: Date
+  toDate: Date,
+  branchFilter?: { branchMode: 'PROD' | 'STAGE' | 'DEV'; repoBranchMap: Record<string, { prod_branch: string | null; stage_branch: string | null; dev_branch: string | null }> }
 ): Promise<{
   deployments: DeploymentWithIncidents[];
   workflow_runs_in_period: WorkflowRunInPeriod[];
@@ -91,16 +93,26 @@ async function getDeploymentsWithIncidentsFromSupabase(
     html_url: string | null;
   }[];
 
+  // Filter workflow runs by branch if filter provided
+  let filteredWorkflowRuns = workflowRunsRows;
+  if (branchFilter) {
+    const branchKey = branchFilter.branchMode === 'PROD' ? 'prod_branch' : branchFilter.branchMode === 'STAGE' ? 'stage_branch' : 'dev_branch';
+    filteredWorkflowRuns = workflowRunsRows.filter((wr) => {
+      const allowedBranch = branchFilter.repoBranchMap[wr.repo_id]?.[branchKey];
+      return allowedBranch != null && allowedBranch !== '' && (wr.head_branch ?? '') === allowedBranch;
+    });
+  }
+
   const runKey = (repoId: string, runId: number) => `${repoId}:${runId}`;
-  const runsMap = new Map<string, (typeof workflowRunsRows)[0]>();
-  for (const wr of workflowRunsRows) {
+  const runsMap = new Map<string, (typeof filteredWorkflowRuns)[0]>();
+  for (const wr of filteredWorkflowRuns) {
     if (wr.run_id != null) runsMap.set(runKey(wr.repo_id, wr.run_id), wr);
   }
 
   // Recovery run = workflow run with conclusion success and created_at = incident.resolved_date (next success after failure)
   const recoveryRunKey = (repoId: string, createdAt: string) => `${repoId}:${createdAt}`;
-  const recoveryRunsMap = new Map<string, (typeof workflowRunsRows)[0]>();
-  for (const wr of workflowRunsRows) {
+  const recoveryRunsMap = new Map<string, (typeof filteredWorkflowRuns)[0]>();
+  for (const wr of filteredWorkflowRuns) {
     if ((wr.conclusion ?? '').toLowerCase() === 'success' && wr.created_at)
       recoveryRunsMap.set(recoveryRunKey(wr.repo_id, wr.created_at), wr);
   }
@@ -207,7 +219,7 @@ async function getDeploymentsWithIncidentsFromSupabase(
   }
 
   // All workflow runs in period, ascending by created_at (for "no incidents" view)
-  const workflowRunsInPeriod: WorkflowRunInPeriod[] = [...workflowRunsRows]
+  const workflowRunsInPeriod: WorkflowRunInPeriod[] = [...filteredWorkflowRuns]
     .sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''))
     .map((wr) => ({
       id: wr.id,
@@ -240,12 +252,39 @@ endpoint.handle.GET(getSchema, async (req, res) => {
   const from_date = startOfDay(new Date(rawFromDate));
   const to_date = endOfDay(new Date(rawToDate));
 
-  if (org_id == null || org_id === '') {
+  // Check if we have workflow runs in Supabase (hybrid setup: GitHub sync to Supabase)
+  const repoIds = await getTeamRepoIds(supabaseServer, team_id);
+  const hasSupabaseData = repoIds.length > 0;
+
+  // Get branch filter for branch filtering
+  const branchMode = branch_mode as ActiveBranchMode;
+  const useBranchFilter =
+    branchMode === ActiveBranchMode.PROD ||
+    branchMode === ActiveBranchMode.STAGE ||
+    branchMode === ActiveBranchMode.DEV;
+  const repoBranchMap = await getTeamReposBranchMap(supabaseServer, team_id);
+  const branchFilter =
+    useBranchFilter && Object.keys(repoBranchMap).length > 0
+      ? { branchMode: branchMode as 'PROD' | 'STAGE' | 'DEV', repoBranchMap }
+      : undefined;
+
+  // If we have data in Supabase, use it (even if org_id is present - hybrid mode)
+  if (hasSupabaseData) {
     const { deployments, workflow_runs_in_period } =
-      await getDeploymentsWithIncidentsFromSupabase(team_id, from_date, to_date);
+      await getDeploymentsWithIncidentsFromSupabase(team_id, from_date, to_date, branchFilter);
     return res.send({
       deployments_with_incidents: deployments,
       workflow_runs_in_period,
+      summary_prs: [],
+      revert_prs: []
+    } as IncidentApiResponseType);
+  }
+
+  // Fallback to external API if no Supabase data
+  if (org_id == null || org_id === '') {
+    return res.send({
+      deployments_with_incidents: [],
+      workflow_runs_in_period: [],
       summary_prs: [],
       revert_prs: []
     } as IncidentApiResponseType);

@@ -56,7 +56,8 @@ endpoint.handle.GET(getSchema, async (req, res) => {
     ),
     getWorkFlowFiltersAsPayloadForSingleTeam({
       orgId: org_id,
-      teamId: team_id
+      teamId: team_id,
+      branchMode: branch_mode as ActiveBranchMode
     })
   ]);
   const [updatedResponse, workflows_map] = await Promise.all([

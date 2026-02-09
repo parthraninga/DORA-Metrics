@@ -139,7 +139,7 @@ export const ChangeFailureRateCard = () => {
               }}
             >
               <MetricExternalRead
-                link={`https://www.middlewarehq.com/blog/how-to-reduce-change-failure-rate-build-bulletproof-software-delivery-process`}
+                link={`/Calculating_the_metrics.jpg`}
                 label="Change Failure Rate"
               />
             </FlexBox>

@@ -108,7 +108,7 @@ export const MeanTimeToRestoreCard = () => {
               }}
             >
               <MetricExternalRead
-                link={`https://www.middlewarehq.com/blog/mttr-deep-dive-a-technical-guide-for-engineering-managers-leaders`}
+                link={`/Calculating_the_metrics.jpg`}
                 label="Mean Time to Recovery"
               />
             </FlexBox>
