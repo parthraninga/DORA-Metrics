@@ -1,4 +1,5 @@
 import * as yup from 'yup';
+import axios from 'axios';
 import { Endpoint, nullSchema } from '@/api-helpers/global';
 import { parseAndStoreFetchResponse } from '@/lib/parse-fetch-response';
 import {
@@ -82,6 +83,16 @@ endpoint.handle.POST(postSchema, async (req, res) => {
       : {}),
   };
 
+  console.log('🚀 Fetch Request Details:', {
+    repoId,
+    repo: `${repoRow.org_name}/${repoRow.repo_name}`,
+    fromTime,
+    toTime,
+    type: type === 2 ? 'CI-CD' : 'PR_MERGE',
+    workflow: repoRow.workflow_file || 'N/A',
+    lambdaUrl: LAMBDA_FETCH_URL
+  });
+
   // Redis: serve from cache when available
   const redis = getRedis();
   const cacheKey = fetchCacheKey(repoId, fromTime, toTime);
@@ -146,19 +157,59 @@ endpoint.handle.POST(postSchema, async (req, res) => {
 
   (async () => {
     try {
-      const response = await fetch(LAMBDA_FETCH_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const raw = await response.text();
-      let rawResponse: unknown = raw;
+      console.log('📡 Calling Lambda URL:', LAMBDA_FETCH_URL);
+      console.log('📦 Request Body:', JSON.stringify(body, null, 2));
+      
+      let response;
+      let rawResponse: unknown;
+      
       try {
-        rawResponse = JSON.parse(raw);
-      } catch {
-        // keep as string
+        // Use axios for better error handling and SSL support
+        // No timeout - let Lambda take as long as it needs
+        response = await axios.post(LAMBDA_FETCH_URL, body, {
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 0, // No timeout - wait indefinitely
+          validateStatus: () => true, // Don't throw on any status code
+        });
+        
+        console.log('📥 Lambda Response Status:', response.status, response.statusText);
+        console.log('📄 Lambda Response Body (first 500 chars):', JSON.stringify(response.data).substring(0, 500));
+        
+        rawResponse = response.data;
+        
+      } catch (fetchErr: any) {
+        console.error('❌ Axios Error Details:', {
+          name: fetchErr?.name,
+          message: fetchErr?.message,
+          code: fetchErr?.code,
+          errno: fetchErr?.errno,
+          syscall: fetchErr?.syscall,
+          hostname: fetchErr?.hostname,
+          config: {
+            url: fetchErr?.config?.url,
+            method: fetchErr?.config?.method,
+            timeout: fetchErr?.config?.timeout
+          },
+          response: fetchErr?.response ? {
+            status: fetchErr?.response?.status,
+            data: JSON.stringify(fetchErr?.response?.data).substring(0, 200)
+          } : null
+        });
+        
+        const errorMsg = fetchErr?.response?.data 
+          ? JSON.stringify(fetchErr.response.data)
+          : `${fetchErr?.message || 'Unknown error'} (code: ${fetchErr?.code || 'N/A'})`;
+        
+        throw new Error(`Lambda request failed: ${errorMsg}`);
       }
-      const state = response.ok ? 'success' : 'failure';
+      
+      const state = (response.status >= 200 && response.status < 300) ? 'success' : 'failure';
+      
+      console.log(`${state === 'success' ? '✅' : '❌'} Fetch ${state}:`, {
+        status: response.status,
+        repoId,
+        fetchDataId
+      });
 
       await supabaseServer
         .from('fetch_data')
@@ -178,26 +229,33 @@ endpoint.handle.POST(postSchema, async (req, res) => {
               FETCH_CACHE_TTL
             );
           }
-        } catch {
-          // ignore Redis set errors
+        } catch (cacheErr) {
+          console.error('⚠️ Redis cache error:', cacheErr);
         }
-        await parseAndStoreFetchResponse(
-          supabaseServer,
-          rawResponse,
-          repoId,
-          fetchDataId
-        );
+        
         await supabaseServer
           .from('repos')
           .update({ last_fetched_at: toTime })
           .eq('id', repoId);
       }
     } catch (err) {
+      console.error('❌ Fetch Error:', err);
+      console.error('Error details:', {
+        message: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
+        repoId,
+        fetchDataId
+      });
+      
       await supabaseServer
         .from('fetch_data')
         .update({
           state: 'failure',
-          raw_response: { error: String(err) },
+          raw_response: { 
+            error: String(err),
+            message: err instanceof Error ? err.message : String(err),
+            timestamp: new Date().toISOString()
+          },
         })
         .eq('id', fetchDataId);
     }

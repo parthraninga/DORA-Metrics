@@ -1,0 +1,135 @@
+/**
+ * Deployment Funnel Chart - Theme Variables
+ * 
+ * These CSS custom properties can be overridden in your theme
+ * to customize the funnel colors for your design system.
+ * 
+ * Usage in your theme file or global CSS:
+ * 
+ * :root {
+ *   --funnel-dev: #your-color;
+ *   --funnel-dev-gradient: #your-gradient-color;
+ * }
+ */
+
+:root {
+  /* DEV Environment Colors (Light Blue) */
+  --funnel-dev: #93C5FD;
+  --funnel-dev-gradient: #60A5FA;
+  
+  /* STAGE Environment Colors (Medium Blue) */
+  --funnel-stage: #5B8FF9;
+  --funnel-stage-gradient: #3B7DD8;
+  
+  /* UAT Environment Colors (Dark Blue) */
+  --funnel-uat: #3559D6;
+  --funnel-uat-gradient: #1E40AF;
+  
+  /* PROD Environment Colors (Deep Blue) */
+  --funnel-prod: #1E3A8A;
+  --funnel-prod-gradient: #1E40AF;
+}
+
+/**
+ * Alternative Color Schemes
+ * Uncomment the desired scheme to apply it
+ */
+
+/* Green to Blue Gradient Scheme */
+/*
+:root {
+  --funnel-dev: #86efac;
+  --funnel-dev-gradient: #4ade80;
+  
+  --funnel-stage: #60a5fa;
+  --funnel-stage-gradient: #3b82f6;
+  
+  --funnel-uat: #818cf8;
+  --funnel-uat-gradient: #6366f1;
+  
+  --funnel-prod: #c084fc;
+  --funnel-prod-gradient: #a855f7;
+}
+*/
+
+/* Warm to Cool Gradient Scheme */
+/*
+:root {
+  --funnel-dev: #fbbf24;
+  --funnel-dev-gradient: #f59e0b;
+  
+  --funnel-stage: #fb923c;
+  --funnel-stage-gradient: #f97316;
+  
+  --funnel-uat: #f87171;
+  --funnel-uat-gradient: #ef4444;
+  
+  --funnel-prod: #e11d48;
+  --funnel-prod-gradient: #be123c;
+}
+*/
+
+/* Monochrome Blue Scheme (Current Default) */
+/*
+:root {
+  --funnel-dev: #93C5FD;
+  --funnel-dev-gradient: #60A5FA;
+  
+  --funnel-stage: #5B8FF9;
+  --funnel-stage-gradient: #3B7DD8;
+  
+  --funnel-uat: #3559D6;
+  --funnel-uat-gradient: #1E40AF;
+  
+  --funnel-prod: #1E3A8A;
+  --funnel-prod-gradient: #1E40AF;
+}
+*/
+
+/* Accessibility High Contrast Scheme */
+/*
+:root {
+  --funnel-dev: #10b981;
+  --funnel-dev-gradient: #059669;
+  
+  --funnel-stage: #3b82f6;
+  --funnel-stage-gradient: #2563eb;
+  
+  --funnel-uat: #f59e0b;
+  --funnel-uat-gradient: #d97706;
+  
+  --funnel-prod: #ef4444;
+  --funnel-prod-gradient: #dc2626;
+}
+*/
+
+/**
+ * Dark Mode Override
+ * Automatically adjusts colors for dark theme
+ */
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* Optionally adjust colors for dark mode */
+    /* Currently using same colors as they work well on dark backgrounds */
+  }
+}
+
+/**
+ * Print Styles
+ * Ensure funnel is readable when printed
+ */
+@media print {
+  :root {
+    --funnel-dev: #60A5FA;
+    --funnel-dev-gradient: #3B82F6;
+    
+    --funnel-stage: #3B82F6;
+    --funnel-stage-gradient: #2563EB;
+    
+    --funnel-uat: #2563EB;
+    --funnel-uat-gradient: #1E40AF;
+    
+    --funnel-prod: #1E40AF;
+    --funnel-prod-gradient: #1E3A8A;
+  }
+}

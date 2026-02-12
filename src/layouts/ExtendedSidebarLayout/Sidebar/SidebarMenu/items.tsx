@@ -68,11 +68,11 @@ const menuItems = (): MenuItems[] => [
         icon: Sync,
         link: ROUTES.SYNC.PATH
       },
-      {
-        name: 'Settings',
-        icon: Settings,
-        link: ROUTES.SETTINGS.PATH
-      },
+      // {
+      //   name: 'Settings',
+      //   icon: Settings,
+      //   link: ROUTES.SETTINGS.PATH
+      // },
       {
         name: 'System Logs',
         icon: Dns,

@@ -42,14 +42,15 @@ export const AppHead = () => {
 
         gtag('config', '${process.env.NEXT_PUBLIC_GA}');`}
       </Script>
-      <Script
+      {/* Help widget disabled */}
+      {/* <Script
         src={`https://ind-widget.freshworks.com/widgets/88000000019.js`}
         strategy="afterInteractive"
       />
       <Script id="support-channel" strategy="afterInteractive">
         {`window.fwSettings={'widget_id':88000000019};
         !function(){if("function"!=typeof window.FreshworksWidget){var n=function(){n.q.push(arguments)};n.q=[],window.FreshworksWidget=n}}()`}
-      </Script>
+      </Script> */}
       <Script>
         {`document.addEventListener("wheel", function(event){
             if(document.activeElement.type === "number"){
@@ -72,12 +73,19 @@ export const AppHead = () => {
       .vis-tooltip {
         position: absolute;
       }
+      /* Help widget styles disabled */
+      /*
+      #freshworks-container #launcher-frame {
+        color-scheme: normal;
+      /* Help widget styles disabled */
+      /*
       #freshworks-container #launcher-frame {
         color-scheme: normal;
       }
       #freshworks-container {
         z-index: 2147483646 !important
       }
+      */
       [class^=chartsjs-reset-zoom-btn-] {
         display: none1;
       }

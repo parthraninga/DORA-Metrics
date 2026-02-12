@@ -1,4 +1,5 @@
 import { AddRounded } from '@mui/icons-material';
+import BugReportIcon from '@mui/icons-material/BugReport';
 import { LoadingButton } from '@mui/lab';
 import {
   Autocomplete,
@@ -303,47 +304,99 @@ const RepoFetchDataModal = ({
   const [submitting, setSubmitting] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [reparseLoading, setReparseLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [fetchLogs, setFetchLogs] = useState<string[]>([]);
+  const [lastFetchStatus, setLastFetchStatus] = useState<FetchStatusItem | null>(null);
+  const [showDebug, setShowDebug] = useState(false);
+  const [debugInfo, setDebugInfo] = useState<any>(null);
+  const [loadingDebug, setLoadingDebug] = useState(false);
 
   const hasLastFetched = Boolean(lastFetchedAt);
+
+  const addLog = useCallback((message: string) => {
+    const timestamp = new Date().toLocaleTimeString();
+    const logMsg = `[${timestamp}] ${message}`;
+    console.log('🔍 FETCH DEBUG:', logMsg);
+    setFetchLogs(prev => [...prev, logMsg]);
+  }, []);
 
   const triggerFetch = useCallback(
     async (days?: number) => {
       if (!repoId) return;
       setSubmitting(true);
+      setError(null); // Clear any previous errors
+      setFetchLogs([]); // Clear logs
+      setLastFetchStatus(null); // Clear old status
+      
+      addLog(`Starting fetch for repo: ${repoName}`);
+      addLog(`Days prior: ${days || 'from last fetch'}`);
+      
       try {
-        await handleApi(`/repos/${repoId}/fetch`, {
+        const response = await handleApi(`/repos/${repoId}/fetch`, {
           method: 'POST',
           data: days != null ? { days_prior: days } : {},
         });
+        addLog(`✅ Fetch request accepted: ${JSON.stringify(response)}`);
         setProcessing(true);
-      } catch (e) {
-        console.error(e);
+        setError(null); // Clear error again when fetch starts successfully
+      } catch (e: any) {
+        const errorMsg = e?.response?.data?.error || e?.message || String(e);
+        addLog(`❌ Fetch request failed: ${errorMsg}`);
+        console.error('Fetch error:', e);
+        setError(errorMsg);
       } finally {
         setSubmitting(false);
       }
     },
-    [repoId]
+    [repoId, repoName, addLog]
   );
 
   useEffect(() => {
     if (!open || !processing || !repoId) return;
+    addLog('📊 Polling for fetch status...');
+    
     const interval = setInterval(async () => {
       try {
         const { items } = await handleApi<{ items: FetchStatusItem[] }>(
           `/repos/${repoId}/fetch-status`
         );
+        
+        const latestItem = items?.[0];
+        if (latestItem) {
+          setLastFetchStatus(latestItem);
+          addLog(`Status: ${latestItem.state}`);
+          
+          // Clear error if the latest fetch is successful
+          if (latestItem.state === 'success') {
+            setError(null);
+          }
+        }
+        
         const anyProcessing = (items || []).some((i) => i.state === 'processing');
         if (!anyProcessing) {
+          // Only check the LATEST item, not old failures
+          if (latestItem && latestItem.state === 'failure') {
+            addLog(`❌ Fetch failed!`);
+            const errorDetail = typeof latestItem.raw_response === 'object' && latestItem.raw_response
+              ? JSON.stringify(latestItem.raw_response, null, 2)
+              : String(latestItem.raw_response || 'Unknown error');
+            setError(`Fetch failed: ${errorDetail}`);
+          } else {
+            addLog('✅ Fetch completed successfully!');
+            setError(null); // Clear any previous errors on success
+          }
           setProcessing(false);
-          onSuccess();
-          onClose();
+          if (latestItem?.state !== 'failure') {
+            onSuccess();
+            onClose();
+          }
         }
-      } catch {
-        // keep polling
+      } catch (e) {
+        addLog(`⚠️ Polling error: ${String(e)}`);
       }
     }, 2000);
     return () => clearInterval(interval);
-  }, [open, processing, repoId, onSuccess, onClose]);
+  }, [open, processing, repoId, onSuccess, onClose, addLog]);
 
   const handleFetchTillNow = useCallback(() => {
     triggerFetch();
@@ -365,6 +418,21 @@ const RepoFetchDataModal = ({
       setReparseLoading(false);
     }
   }, [repoId, onSuccess]);
+
+  const loadDebugInfo = useCallback(async () => {
+    if (!repoId) return;
+    setLoadingDebug(true);
+    try {
+      const data = await handleApi(`/repos/${repoId}/debug`);
+      setDebugInfo(data);
+      addLog('🔍 Debug info loaded');
+    } catch (e: any) {
+      console.error('Debug error:', e);
+      addLog(`❌ Failed to load debug info: ${e.message}`);
+    } finally {
+      setLoadingDebug(false);
+    }
+  }, [repoId, addLog]);
 
   if (!open) return null;
 
@@ -405,6 +473,88 @@ const RepoFetchDataModal = ({
             <FlexBox alignCenter gap={1}>
               <CircularProgress size={20} />
               <Line>Processing… Fetch runs in the background.</Line>
+            </FlexBox>
+          )}
+
+          {error && (
+            <FlexBox col gap={1} p={2} sx={{ bgcolor: '#3d1515', borderRadius: 1 }}>
+              <Line bold error>Error:</Line>
+              <Line small error sx={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>
+                {error}
+              </Line>
+            </FlexBox>
+          )}
+
+          <FlexBox>
+            <Button
+              size="small"
+              startIcon={<BugReportIcon />}
+              onClick={() => {
+                if (!showDebug) {
+                  setShowDebug(true);
+                  loadDebugInfo();
+                } else {
+                  setShowDebug(false);
+                }
+              }}
+            >
+              {showDebug ? 'Hide Debug Info' : 'Show Debug Info'}
+            </Button>
+          </FlexBox>
+
+          {lastFetchStatus && (
+            <FlexBox col gap={1} p={1.5} sx={{ bgcolor: '#1a1a2e', borderRadius: 1, border: '1px solid #333' }}>
+              <Line small bold>Last Fetch Status:</Line>
+              <Line tiny sx={{ color: lastFetchStatus.state === 'success' ? '#4caf50' : lastFetchStatus.state === 'failure' ? '#f44336' : '#ff9800' }}>
+                State: {lastFetchStatus.state}
+              </Line>
+              {lastFetchStatus.raw_response && (
+                <FlexBox col gap={0.5}>
+                  <Line tiny secondary>Response:</Line>
+                  <Line tiny sx={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', maxHeight: '150px', overflow: 'auto' }}>
+                    {typeof lastFetchStatus.raw_response === 'string'
+                      ? lastFetchStatus.raw_response
+                      : JSON.stringify(lastFetchStatus.raw_response, null, 2)}
+                  </Line>
+                </FlexBox>
+              )}
+            </FlexBox>
+          )}
+
+          {showDebug && debugInfo && (
+            <FlexBox col gap={1} p={2} sx={{ bgcolor: '#0d1b2a', borderRadius: 1, border: '1px solid #1b263b' }}>
+              <FlexBox gap={1} fullWidth justifyBetween alignCenter>
+                <Line small bold>🔍 Repository Diagnostics</Line>
+                <LoadingButton
+                  size="small"
+                  startIcon={<BugReportIcon />}
+                  loading={loadingDebug}
+                  onClick={loadDebugInfo}
+                >
+                  Refresh
+                </LoadingButton>
+              </FlexBox>
+              
+              <FlexBox col gap={0.5}>
+                <Line tiny semibold>Validation:</Line>
+                <Line tiny sx={{ fontFamily: 'monospace', pl: 2 }}>
+                  Ready to Fetch: {debugInfo.validation?.ready_to_fetch ? '✅' : '❌'}<br/>
+                  Has Token: {debugInfo.validation?.has_valid_token ? '✅' : '❌'}<br/>
+                  Has Org: {debugInfo.validation?.has_org_name ? '✅' : '❌'}<br/>
+                  Has Repo: {debugInfo.validation?.has_repo_name ? '✅' : '❌'}
+                </Line>
+              </FlexBox>
+            </FlexBox>
+          )}
+
+          {fetchLogs.length > 0 && (
+            <FlexBox col gap={0.5} p={1.5} sx={{ bgcolor: '#0a0a0a', borderRadius: 1, maxHeight: '200px', overflow: 'auto' }}>
+              <Line small bold>Debug Logs:</Line>
+              {fetchLogs.map((log, i) => (
+                <Line key={i} tiny sx={{ fontFamily: 'monospace', color: '#888' }}>
+                  {log}
+                </Line>
+              ))}
             </FlexBox>
           )}
         </FlexBox>

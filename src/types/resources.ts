@@ -596,8 +596,8 @@ export type TeamDoraMetricsApiResponseType = {
   lead_time_prs: PR[];
   assigned_repos: (Row<'TeamRepos'> & Row<'OrgRepo'>)[];
   unsynced_repos: ID[];
-  /** Deployment pipeline counts by env (dev/stage/prod); from pull_requests.base_branch vs repo dev/stage/prod branch. */
-  deployment_pipeline?: { dev: number; stage: number; prod: number };
+  /** Deployment pipeline counts by env (dev/stage/uat/prod); from pull_requests.base_branch vs repo dev/stage/uat/prod branch. */
+  deployment_pipeline?: { dev: number; stage: number; uat?: number; prod: number };
 };
 
 export enum ActiveBranchMode {

@@ -72,12 +72,13 @@ export async function getTeamReposBranchMap(
 export type DeploymentPipelineCounts = {
   dev: number;
   stage: number;
+  uat?: number;
   prod: number;
 };
 
 /**
  * Count MERGED pull_requests in date range by environment: dev (base_branch = repo's dev_branch),
- * stage (base_branch = repo's stage_branch), prod (base_branch = repo's prod_branch).
+ * stage (base_branch = repo's stage_branch), uat (base_branch = repo's uat_branch), prod (base_branch = repo's prod_branch).
  * Used for the deployment pipeline funnel; independent of branch dropdown.
  */
 export async function getDeploymentPipelineFromSupabase(
@@ -107,6 +108,7 @@ export async function getDeploymentPipelineFromSupabase(
 
   let dev = 0;
   let stage = 0;
+  let uat = 0;
   let prod = 0;
   for (const row of rows as { repo_id: string; base_branch?: string | null }[]) {
     const branches = repoBranchMap[row.repo_id];
@@ -116,11 +118,18 @@ export async function getDeploymentPipelineFromSupabase(
       dev += 1;
     } else if (branches.stage_branch != null && branches.stage_branch !== '' && base === branches.stage_branch) {
       stage += 1;
+    } else if (branches.uat_branch != null && branches.uat_branch !== '' && base === branches.uat_branch) {
+      uat += 1;
     } else if (branches.prod_branch != null && branches.prod_branch !== '' && base === branches.prod_branch) {
       prod += 1;
     }
   }
-  return { dev, stage, prod };
+  // Only include UAT in result if it has deployments
+  const result: DeploymentPipelineCounts = { dev, stage, prod };
+  if (uat > 0) {
+    result.uat = uat;
+  }
+  return result;
 }
 
 function filterRowsByBranchMode<T extends { repo_id: string; base_branch?: string | null }>(
