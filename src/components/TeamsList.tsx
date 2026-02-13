@@ -37,7 +37,12 @@ const VISIBLE_REPOS_COUNT = 3;
 const HORIZONTAL_SPACE = 3 / 2;
 
 export const TeamsList = () => {
-  const teamsArray = useSelector((state) => state.team.teams);
+  const teamsArrayRaw = useSelector((state) => state.team.teams);
+  // Sort teams alphabetically by name
+  const teamsArray = useMemo(
+    () => [...teamsArrayRaw].sort((a, b) => a.name.localeCompare(b.name)),
+    [teamsArrayRaw]
+  );
   const searchQuery = useEasyState('');
   const router = useRouter();
   const dispatch = useDispatch();
@@ -92,8 +97,14 @@ export const TeamsList = () => {
         <FlexBox
           gap={HORIZONTAL_SPACE}
           grid
-          gridTemplateColumns={'1fr 1fr'}
-          width={'900px'}
+          gridTemplateColumns={{
+            xs: '1fr',
+            sm: '1fr 1fr',
+            md: '1fr 1fr',
+            lg: 'repeat(3, 1fr)',
+            xl: 'repeat(4, 1fr)'
+          }}
+          maxWidth={'100%'}
           relative
           sx={{
             filter: isLoadingTeams ? 'blur(2px)' : 'none',
@@ -137,7 +148,7 @@ const SearchFilter: FC<{
 }> = ({ searchQuery, onChange, handleShowCreateTeam, showCreate }) => {
   return (
     <FlexBox col gap={4}>
-      <FlexBox width={'900px'} gap={HORIZONTAL_SPACE}>
+      <FlexBox maxWidth={'100%'} gap={HORIZONTAL_SPACE}>
         <FlexBox flex1>
           <TextField
             size="small"

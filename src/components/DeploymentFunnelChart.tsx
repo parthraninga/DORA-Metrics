@@ -157,8 +157,9 @@ function calculateConnectedWidths(stages: FunnelStage[]): Array<{ topWidth: numb
  * ABSOLUTE RULES (ENFORCED):
  * 1. ZERO spacing between stages (no gap, margin, padding, space-y, or flex gap)
  * 2. All trapezoids in ONE single SVG
- * 3. Each stage exactly 120px height
- * 4. For stage i: yStart = i * 120, yEnd = yStart + 120
+ * 3. Each stage exactly 140px height (responsive to number of environments)
+ * 4. For stage i: yStart = i * 140, yEnd = yStart + 140
+ * 5. Labels vertically aligned in straight line on left using flexbox space-evenly
  * 
  * CONNECTED WIDTH RULE (MANDATORY):
  * - Compute scaledWidths first
@@ -169,16 +170,16 @@ function calculateConnectedWidths(stages: FunnelStage[]): Array<{ topWidth: numb
  * - Ensures: bottom of DEV == top of STAGE, etc.
  * 
  * LAYOUT STRUCTURE:
- * - Two-column layout: Labels (120px, right-aligned) + Funnel (420px max, centered)
- * - Labels vertically centered at: (i * 120) + 60
- * - No vertical spacing anywhere
+ * - Two-column layout: Labels (100px, left-aligned vertically) + Funnel (550px max, centered)
+ * - Labels in flex column with space-evenly distribution
+ * - Funnel size scales with number of environments
  * 
  * VISUAL RESULT:
- * Dev      ███████████████
- * Stage              █████████
- * Prod                       █████
+ * Dev       ███████████████
+ * Stage     █████████
+ * Prod      █████
  * 
- * All connected vertically, compact, professional dashboard look.
+ * All labels aligned vertically, funnel larger and more visible, professional dashboard look.
  */
 export const DeploymentFunnelChart: FC<DeploymentFunnelChartProps> = ({
   data,
@@ -196,9 +197,9 @@ export const DeploymentFunnelChart: FC<DeploymentFunnelChartProps> = ({
   const connectedWidths = useMemo(() => calculateConnectedWidths(stages), [stages]);
 
   // SVG dimensions - ABSOLUTE RULES
-  const STAGE_HEIGHT = 120; // Each stage exactly 120px for better visibility
+  const STAGE_HEIGHT = 140; // Each stage exactly 140px (increased for better visibility)
   const svgHeight = stages.length * STAGE_HEIGHT;
-  const svgWidth = 420; // Max funnel width
+  const svgWidth = 550; // Max funnel width (increased for better visibility)
 
   // Empty state
   if (stages.length === 0 || total === 0) {
@@ -247,43 +248,40 @@ export const DeploymentFunnelChart: FC<DeploymentFunnelChartProps> = ({
         sx={{
           width: '100%',
           display: 'flex',
-          gap: 0, // NO GAP
+          gap: 4,
           overflow: 'hidden',
           alignItems: 'flex-start'
         }}
       >
-        {/* Environment Labels Column - 120px, right-aligned */}
+        {/* Environment Labels Column - Vertically aligned on left */}
         <Box
           sx={{
-            width: 120,
-            flexShrink: 0,
             display: 'flex',
             flexDirection: 'column',
-            gap: 0 // NO VERTICAL SPACING
+            justifyContent: 'space-evenly',
+            height: svgHeight,
+            flexShrink: 0,
+            minWidth: 100
           }}
         >
-          {stages.map((stage, _i) => (
+          {stages.map((stage) => (
             <Box
               key={`label-${stage.key}`}
               sx={{
-                height: STAGE_HEIGHT,
                 display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'flex-end',
-                pr: 3
+                alignItems: 'center'
               }}
             >
               <Line
                 white
                 bold
                 sx={{
-                  fontSize: '1.1rem',
+                  fontSize: '1.2rem',
                   fontWeight: 700,
                   letterSpacing: '0.8px',
-                  textAlign: 'right',
                   opacity: hoveredStage === null || hoveredStage === stage.key ? 1 : 0.5,
                   transition: 'all 0.2s ease',
-                  transform: hoveredStage === stage.key ? 'scale(1.05)' : 'scale(1)'
+                  transform: hoveredStage === stage.key ? 'scale(1.08)' : 'scale(1)'
                 }}
               >
                 {stage.label}
@@ -292,14 +290,14 @@ export const DeploymentFunnelChart: FC<DeploymentFunnelChartProps> = ({
           ))}  
         </Box>
 
-        {/* Funnel Column - Max 420px, centered */}
+        {/* Funnel Column - Max 550px, centered */}
         <Box
           sx={{
             flex: 1,
             display: 'flex',
             justifyContent: 'center',
             minWidth: 0,
-            maxWidth: 420
+            maxWidth: 550
           }}
         >
           <svg
@@ -359,8 +357,8 @@ export const DeploymentFunnelChart: FC<DeploymentFunnelChartProps> = ({
             {/* Render all trapezoids in sequence - NO GAPS */}
             {stages.map((stage, index) => {
               // For stage i:
-              // yStart = i * 85
-              // yEnd = yStart + 85
+              // yStart = i * 140
+              // yEnd = yStart + 140
               const yOffset = index * STAGE_HEIGHT;
               const { topWidth, bottomWidth } = connectedWidths[index];
               const points = generateConnectedTrapezoidPoints(

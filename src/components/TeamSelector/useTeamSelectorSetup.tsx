@@ -58,7 +58,12 @@ export const useTeamSelectorSetup = ({ mode }: UseTeamSelectorSetupArgs) => {
     ]);
   }, [dispatch, orgId]);
 
-  const apiTeams = useSelector((state) => state.team.teams);
+  const apiTeamsRaw = useSelector((state) => state.team.teams);
+  // Sort teams alphabetically by name
+  const apiTeams = useMemo(
+    () => [...apiTeamsRaw].sort((a, b) => a.name.localeCompare(b.name)),
+    [apiTeamsRaw]
+  );
   const loadingTeams = useSelector(
     (state) => state.team.requests?.teams === FetchState.REQUEST
   );
