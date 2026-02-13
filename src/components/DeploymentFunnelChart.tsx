@@ -54,24 +54,28 @@ const ENV_COLORS: Record<string, { base: string; gradient: string }> = {
 };
 
 /**
- * WIDTH CALCULATION - Normalized clamped scaling
+ * WIDTH CALCULATION - Power scaling
  * 
- * Formula: width = 40% + ((count / maxCount) × 60%)
- * Zero case: width = 35%
+ * Zero values treated as 1 for width calculation ONLY (displayed as 0)
+ * Formula: widthPercent = Math.pow(layoutValue / maxLayoutValue, 0.8) * 100
  * 
- * This ensures all stages remain visible even with extreme value differences
+ * This ensures:
+ * - Better visual distribution across all value ranges
+ * - Moderate values (253 vs 66) appear distinctly different
+ * - 0 is treated as 1 for width (but displayed as 0)
+ * - No artificial minimum or clamping
  */
-const MIN_WIDTH_PERCENT = 40;
-const MAX_WIDTH_PERCENT = 100;
-const ZERO_WIDTH_PERCENT = 35;
-
-function calculateNormalizedWidth(count: number, maxCount: number): number {
-  if (count === 0) return ZERO_WIDTH_PERCENT;
-  if (maxCount === 0) return MIN_WIDTH_PERCENT;
+function calculateWidth(count: number, maxLayoutValue: number): number {
+  // Treat count === 0 as 1 for width calculation ONLY
+  const layoutValue = count === 0 ? 1 : count;
   
-  const ratio = count / maxCount;
-  const widthRange = MAX_WIDTH_PERCENT - MIN_WIDTH_PERCENT; // 60%
-  return MIN_WIDTH_PERCENT + (ratio * widthRange);
+  if (maxLayoutValue === 0 || maxLayoutValue === 1) return 100;
+  
+  // Power scaling with exponent 0.8
+  const ratio = layoutValue / maxLayoutValue;
+  const widthPercent = Math.pow(ratio, 0.8) * 100;
+  
+  return widthPercent;
 }
 
 /**
@@ -81,23 +85,35 @@ function getOrderedStages(data: PipelineData): FunnelStage[] {
   const total = Object.values(data).reduce((sum, val) => sum + val, 0);
   if (total === 0) return [];
 
-  const maxCount = Math.max(...Object.values(data), 1);
-  const stages: FunnelStage[] = [];
-
+  // First pass: collect stages and calculate layout values
+  const preliminaryStages: Array<{ env: string; count: number; layoutValue: number }> = [];
+  
   for (const env of ENV_ORDER) {
     const count = data[env] || 0;
     
     // Skip UAT if it doesn't exist
     if (env === 'uat' && count === 0) continue;
     
+    // Calculate layout value: treat 0 as 1 for width calculation ONLY
+    const layoutValue = count === 0 ? 1 : count;
+    preliminaryStages.push({ env, count, layoutValue });
+  }
+
+  // Calculate max layout value for normalization
+  const maxLayoutValue = Math.max(...preliminaryStages.map(s => s.layoutValue), 1);
+
+  // Second pass: create final stages with calculated widths
+  const stages: FunnelStage[] = [];
+  
+  for (const { env, count } of preliminaryStages) {
     stages.push({
       key: env,
       label: ENV_LABELS[env] || env.toUpperCase(),
-      count,
+      count, // Display actual count (including 0)
       percentage: total > 0 ? (count / total) * 100 : 0,
       color: ENV_COLORS[env]?.base || '#6B7280',
       gradient: ENV_COLORS[env]?.gradient || '#4B5563',
-      widthPercent: calculateNormalizedWidth(count, maxCount)
+      widthPercent: calculateWidth(count, maxLayoutValue)
     });
   }
 
@@ -131,21 +147,13 @@ function generateConnectedTrapezoidPoints(
 }
 
 /**
- * Calculate connected widths for all stages
- * Ensures bottom[i] = top[i+1] for seamless connection
+ * Calculate independent widths for all stages
+ * Each stage uses its own scaled width without connecting to neighbors
  */
 function calculateConnectedWidths(stages: FunnelStage[]): Array<{ topWidth: number; bottomWidth: number }> {
-  // First, get the scaled widths array
-  const scaledWidths = stages.map(stage => stage.widthPercent);
-  
-  return stages.map((_stage, i) => {
-    const topWidth = scaledWidths[i];
-    
-    // MANDATORY CONNECTED WIDTH RULE:
-    // If i < last: bottomWidth[i] = scaledWidths[i + 1]
-    // If i == last: bottomWidth[i] = scaledWidths[i] * 0.85
-    const isLast = i === stages.length - 1;
-    const bottomWidth = isLast ? scaledWidths[i] * 0.85 : scaledWidths[i + 1];
+  return stages.map(stage => {
+    const topWidth = stage.widthPercent;
+    const bottomWidth = topWidth * 0.75;
     
     return { topWidth, bottomWidth };
   });
@@ -159,27 +167,26 @@ function calculateConnectedWidths(stages: FunnelStage[]): Array<{ topWidth: numb
  * 2. All trapezoids in ONE single SVG
  * 3. Each stage exactly 140px height (responsive to number of environments)
  * 4. For stage i: yStart = i * 140, yEnd = yStart + 140
- * 5. Labels vertically aligned in straight line on left using flexbox space-evenly
+ * 5. Labels vertically aligned with trapezoid centers using absolute positioning
  * 
- * CONNECTED WIDTH RULE (MANDATORY):
- * - Compute scaledWidths first
- * - For stage i:
- *   - topWidth[i] = scaledWidths[i]
- *   - If i < last: bottomWidth[i] = scaledWidths[i + 1]
- *   - If i == last: bottomWidth[i] = scaledWidths[i] * 0.85
- * - Ensures: bottom of DEV == top of STAGE, etc.
+ * INDEPENDENT WIDTH RULE:
+ * - Each stage width is proportional to its value (logarithmic scaling)
+ * - topWidth = scaledWidth (based on logarithmic calculation)
+ * - bottomWidth = topWidth * 0.75 (creates trapezoid taper)
+ * - Stages do NOT connect (no bottom[i] = top[i+1] rule)
+ * - Allows non-monotonic values (e.g., 366 → 0 → 17)
  * 
  * LAYOUT STRUCTURE:
- * - Two-column layout: Labels (100px, left-aligned vertically) + Funnel (550px max, centered)
- * - Labels in flex column with space-evenly distribution
+ * - Two-column layout: Labels (absolute positioned) + Funnel (550px max, centered)
+ * - Labels absolutely positioned at trapezoid vertical centers
  * - Funnel size scales with number of environments
  * 
  * VISUAL RESULT:
  * Dev       ███████████████
- * Stage     █████████
- * Prod      █████
+ * Stage     ██
+ * Prod      ████████
  * 
- * All labels aligned vertically, funnel larger and more visible, professional dashboard look.
+ * Each stage width reflects its actual value, no distortion from connected geometry.
  */
 export const DeploymentFunnelChart: FC<DeploymentFunnelChartProps> = ({
   data,
@@ -232,9 +239,9 @@ export const DeploymentFunnelChart: FC<DeploymentFunnelChartProps> = ({
   }
 
   return (
-    <FlexBox col sx={{ width: '100%', minHeight: 320 }}>
+    <FlexBox col sx={{ width: '100%' }}>
       {/* Title */}
-      <FlexBox col gap={0.5} sx={{ mb: 2 }}>
+      <FlexBox col gap={0.5} sx={{ mb: 1 }}>
         <Line white huge bold>
           Deployment Pipeline
         </Line>
@@ -253,41 +260,46 @@ export const DeploymentFunnelChart: FC<DeploymentFunnelChartProps> = ({
           alignItems: 'flex-start'
         }}
       >
-        {/* Environment Labels Column - Vertically aligned on left */}
+        {/* Environment Labels Column - Absolutely positioned at trapezoid centers */}
         <Box
           sx={{
-            display: 'flex',
-            flexDirection: 'column',
-            justifyContent: 'space-evenly',
+            position: 'relative',
             height: svgHeight,
             flexShrink: 0,
             minWidth: 100
           }}
         >
-          {stages.map((stage) => (
-            <Box
-              key={`label-${stage.key}`}
-              sx={{
-                display: 'flex',
-                alignItems: 'center'
-              }}
-            >
-              <Line
-                white
-                bold
+          {stages.map((stage, i) => {
+            const yCenter = i * STAGE_HEIGHT + STAGE_HEIGHT / 2;
+            
+            return (
+              <Box
+                key={`label-${stage.key}`}
                 sx={{
-                  fontSize: '1.2rem',
-                  fontWeight: 700,
-                  letterSpacing: '0.8px',
-                  opacity: hoveredStage === null || hoveredStage === stage.key ? 1 : 0.5,
-                  transition: 'all 0.2s ease',
-                  transform: hoveredStage === stage.key ? 'scale(1.08)' : 'scale(1)'
+                  position: 'absolute',
+                  top: `${yCenter}px`,
+                  transform: 'translateY(-50%)',
+                  display: 'flex',
+                  alignItems: 'center'
                 }}
               >
-                {stage.label}
-              </Line>
-            </Box>
-          ))}  
+                <Line
+                  white
+                  bold
+                  sx={{
+                    fontSize: '1.2rem',
+                    fontWeight: 700,
+                    letterSpacing: '0.8px',
+                    opacity: hoveredStage === null || hoveredStage === stage.key ? 1 : 0.5,
+                    transition: 'all 0.2s ease',
+                    transform: hoveredStage === stage.key ? 'scale(1.08)' : 'scale(1)'
+                  }}
+                >
+                  {stage.label}
+                </Line>
+              </Box>
+            );
+          })}
         </Box>
 
         {/* Funnel Column - Max 550px, centered */}
