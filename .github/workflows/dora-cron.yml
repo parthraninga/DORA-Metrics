@@ -83,6 +83,17 @@ jobs:
           // ── Helper: sleep ──────────────────────────────────────────────────────
           const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+          // ── Helper: detect SCM provider from repo metadata ────────────────────────
+          function detectProvider(repo) {
+            const haystack = `${repo.org_name ?? ''} ${repo.repo_name ?? ''}`.toLowerCase();
+            if (haystack.includes('github'))    return 'github';
+            if (haystack.includes('bitbucket')) return 'bitbucket';
+            if (haystack.includes('azure'))     return 'azure';
+            if (haystack.includes('aws'))       return 'aws';
+            if (haystack.includes('jenkins'))   return 'jenkins';
+            return 'unknown';
+          }
+
           // ── Helper: fetch ALL repos with pagination ────────────────────────────
           async function fetchAllRepos() {
             const allRepos = [];
@@ -91,7 +102,7 @@ jobs:
             while (true) {
               const { data, error } = await supabase
                 .from('repos')
-                .select('id, repo_name, org_name, prod_branch, last_fetched_at, created_at')
+                .select('id, repo_name, org_name, token_id, prod_branch, last_fetched_at, created_at')
                 .order('last_fetched_at', { ascending: true, nullsFirst: true })
                 .range(from, from + PAGE_SIZE - 1);
 
@@ -111,10 +122,51 @@ jobs:
             return allRepos;
           }
 
+          // ── Helper: fetch all tokens in ONE query, build in-memory cache ───────
+          // Tokens are held only in memory and NEVER logged.
+          async function fetchTokenCache(tokenIds) {
+            const uniqueIds = [...new Set(tokenIds)].filter(Boolean);
+            if (uniqueIds.length === 0) return new Map();
+
+            const { data, error } = await supabase
+              .from('tokens')
+              .select('id, token')
+              .in('id', uniqueIds);
+
+            if (error) {
+              throw new Error(`Failed to fetch tokens from Supabase: ${error.message}`);
+            }
+
+            const cache = new Map();
+            for (const row of data ?? []) {
+              cache.set(row.id, row.token);
+            }
+
+            // Log only counts — never token values
+            log.info('Token cache built', {
+              requested: uniqueIds.length,
+              resolved:  cache.size,
+              missing:   uniqueIds.length - cache.size,
+            });
+
+            return cache;
+          }
+
           // ── Helper: call ingestion API with retry + exponential back-off ───────
-          async function callIngestionApi(repo, fromTime, toTime) {
-            const payload = { repo_id: repo.id, from_time: fromTime, to_time: toTime };
+          async function callIngestionApi(repo, fromTime, toTime, githubPatToken) {
+            const provider = detectProvider(repo);
+            const payload  = {
+              repo_id:          repo.id,
+              from_time:        fromTime,
+              to_time:          toTime,
+              github_pat_token: githubPatToken, // never logged
+            };
             let lastError;
+            const apiCallStart = Date.now();
+
+            // Patterns for GitHub permission / credential failures (case-insensitive)
+            const GITHUB_PERM_PATTERNS   = ['bad credentials', 'resource not accessible', 'requires authentication', 'not found', 'must have push access'];
+            const GITHUB_EXPIRY_PATTERNS = ['token expired', 'revoked', 'invalid token'];
 
             for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
               const controller = new AbortController();
@@ -130,26 +182,59 @@ jobs:
 
                 clearTimeout(timeoutId);
 
+                // ── Extract Lambda / proxy request ID (never throws if header absent) ──
+                const lambdaRequestId =
+                  res.headers.get('x-amzn-requestid') ??
+                  res.headers.get('x-request-id')     ??
+                  res.headers.get('lambda-request-id') ??
+                  null;
+                if (lambdaRequestId) {
+                  log.info('Lambda request id', { repo_id: repo.id, provider, request_id: lambdaRequestId });
+                }
+
                 if (res.ok) {
-                  const body = await res.json().catch(() => ({}));
+                  const body        = await res.json().catch(() => ({}));
+                  const duration_ms = Date.now() - apiCallStart;
+                  const bodyText    = JSON.stringify(body).toLowerCase();
+
+                  // Detect permission / expiry signals even on 2xx responses
+                  if (GITHUB_PERM_PATTERNS.some(p => bodyText.includes(p))) {
+                    log.error('GitHub permission issue detected', { repo_id: repo.id, provider });
+                  }
+                  if (GITHUB_EXPIRY_PATTERNS.some(p => bodyText.includes(p))) {
+                    log.error('GitHub token expired', { repo_id: repo.id, provider });
+                  }
+
                   log.info('Ingestion API success', {
-                    repo_id:   repo.id,
-                    repo_name: repo.repo_name,
-                    org_name:  repo.org_name,
-                    from_time: fromTime,
-                    to_time:   toTime,
-                    status:    res.status,
+                    repo_id:      repo.id,
+                    repo_name:    repo.repo_name,
+                    org_name:     repo.org_name,
+                    provider,
+                    from_time:    fromTime,
+                    to_time:      toTime,
+                    status:       res.status,
                     attempt,
-                    response:  body,
+                    duration_ms,
+                    response:     body,
                   });
                   return { success: true };
                 }
 
-                const errBody = await res.text().catch(() => '');
-                lastError = { status: res.status, body: errBody };
+                const errBody  = await res.text().catch(() => '');
+                lastError      = { status: res.status, body: errBody };
+                const errLower = errBody.toLowerCase();
+
+                if (GITHUB_PERM_PATTERNS.some(p => errLower.includes(p))) {
+                  log.error('GitHub permission issue detected', { repo_id: repo.id, provider });
+                }
+                if (GITHUB_EXPIRY_PATTERNS.some(p => errLower.includes(p))) {
+                  log.error('GitHub token expired', { repo_id: repo.id, provider });
+                }
+
                 log.warn('Ingestion API non-200', {
                   repo_id:     repo.id,
                   repo_name:   repo.repo_name,
+                  provider,
                   status:      res.status,
                   body:        errBody,
                   attempt,
@@ -162,6 +247,7 @@ jobs:
                 log.warn('Ingestion API request error', {
                   repo_id:     repo.id,
                   repo_name:   repo.repo_name,
+                  provider,
                   error:       err.message,
                   attempt,
                   max_retries: MAX_RETRIES,
@@ -170,7 +256,7 @@ jobs:
 
               if (attempt < MAX_RETRIES) {
                 const delay = RETRY_DELAY_MS * attempt; // 5s, 10s, 15s
-                log.info('Retrying', { repo_id: repo.id, delay_ms: delay, next_attempt: attempt + 1 });
+                log.info('Retrying', { repo_id: repo.id, provider, delay_ms: delay, next_attempt: attempt + 1 });
                 await sleep(delay);
               }
             }
@@ -179,6 +265,7 @@ jobs:
               repo_id:    repo.id,
               repo_name:  repo.repo_name,
               org_name:   repo.org_name,
+              provider,
               last_error: lastError,
             });
 
@@ -186,11 +273,14 @@ jobs:
           }
 
           // ── Helper: process one repo ───────────────────────────────────────────
-          async function processRepo(repo, toTime, runStart) {
+          async function processRepo(repo, toTime, runStart, tokenCache) {
+            const provider = detectProvider(repo);
+
             log.info('Processing repo', {
               repo_id:         repo.id,
               repo_name:       repo.repo_name,
               org_name:        repo.org_name,
+              provider,
               last_fetched_at: repo.last_fetched_at ?? null,
             });
 
@@ -201,6 +291,7 @@ jobs:
                 log.warn('Skipping repo — fetched too recently', {
                   repo_id:             repo.id,
                   repo_name:           repo.repo_name,
+                  provider,
                   minutes_since_fetch: minutesSinceFetch.toFixed(2),
                   threshold_minutes:   RECENT_SKIP_MINUTES,
                 });
@@ -222,14 +313,31 @@ jobs:
               fromTime = fallback.toISOString();
             }
 
-            log.info('Time window', { repo_id: repo.id, from_time: fromTime, to_time: toTime });
+            log.info('Time window', { repo_id: repo.id, provider, from_time: fromTime, to_time: toTime });
+
+            // Resolve token from cache — skip repo if token not found
+            const githubPatToken = tokenCache.get(repo.token_id);
+            if (!githubPatToken) {
+              log.error('Token not found in cache — skipping repo', {
+                repo_id:   repo.id,
+                repo_name: repo.repo_name,
+                provider,
+                token_id:  repo.token_id ?? null,
+              });
+              return { status: 'failed', error: { message: 'token_not_found' } };
+            }
 
             if (DRY_RUN) {
-              log.info('DRY RUN: skipping API call', { repo_id: repo.id });
+              log.info('DRY RUN: skipping API call', { repo_id: repo.id, provider });
               return { status: 'dry_run' };
             }
 
-            const result = await callIngestionApi(repo, fromTime, toTime);
+            const repoStart   = Date.now();
+            const result      = await callIngestionApi(repo, fromTime, toTime, githubPatToken);
+            const duration_ms = Date.now() - repoStart;
+
+            log.info('Repo ingestion finished', { repo_id: repo.id, provider, duration_ms });
+
             return result.success
               ? { status: 'success' }
               : { status: 'failed', error: result.error };
@@ -276,12 +384,22 @@ jobs:
 
             log.info('Fetched all repos', { total: repos.length });
 
+            // Build token cache with a single Supabase query
+            let tokenCache;
+            try {
+              const tokenIds = repos.map(r => r.token_id).filter(Boolean);
+              tokenCache = await fetchTokenCache(tokenIds);
+            } catch (err) {
+              log.error('Failed to build token cache', { error: err.message });
+              process.exit(1);
+            }
+
             const toTime   = runStart.toISOString();
             const counters = { success: 0, failed: 0, skipped: 0, dry_run: 0 };
             const failures = [];
 
             const repoResults = await runInBatches(repos, BATCH_SIZE, (repo) =>
-              processRepo(repo, toTime, runStart).then(result => ({ repo, result }))
+              processRepo(repo, toTime, runStart, tokenCache).then(result => ({ repo, result }))
             );
 
             for (const { repo, result } of repoResults) {
@@ -292,10 +410,13 @@ jobs:
             }
 
             const durationMs = Date.now() - runStart.getTime();
-            log.info('DORA ingestion run complete', {
-              total:       repos.length,
-              ...counters,
-              duration_ms: durationMs,
+            log.info('DORA run summary', {
+              total_repos:       repos.length,
+              success_count:     counters.success  ?? 0,
+              failed_count:      counters.failed   ?? 0,
+              skipped_count:     counters.skipped  ?? 0,
+              dry_run_count:     counters.dry_run  ?? 0,
+              total_duration_ms: durationMs,
             });
 
             if (failures.length > 0) {
