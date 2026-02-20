@@ -43,6 +43,7 @@ jobs:
         run: |
           node --input-type=module << 'EOF'
           import { createClient } from '@supabase/supabase-js';
+          import { createHash }    from 'crypto';
 
           // ── Constants ──────────────────────────────────────────────────────────
           const SUPABASE_URL              = process.env.SUPABASE_URL;
@@ -152,6 +153,192 @@ jobs:
             return cache;
           }
 
+          // ── Helper: generate deterministic UUID v5-like from a name ─────────────
+          function generateDeterministicUUID(namespace, name) {
+            const hash = createHash('sha1');
+            hash.update(namespace + name);
+            const hex = hash.digest('hex');
+            return [
+              hex.substring(0, 8),
+              hex.substring(8, 12),
+              '5' + hex.substring(13, 16),
+              ((parseInt(hex.substring(16, 18), 16) & 0x3f) | 0x80).toString(16) + hex.substring(18, 20),
+              hex.substring(20, 32),
+            ].join('-');
+          }
+
+          // ── Helper: map PR from Lambda response to DB schema ──────────────────
+          function mapPullRequest(pr, repoId, fetchDataId) {
+            if (!pr.id) return null;
+            return {
+              id:                    pr.id,
+              repo_id:               repoId,
+              fetch_data_id:         fetchDataId,
+              pr_no:                 pr.number?.toString() ?? pr.pr_no?.toString(),
+              title:                 pr.title,
+              author:                typeof pr.author === 'object' ? pr.author?.username : pr.author,
+              first_commit_to_open:  pr.first_commit_to_open,
+              cycle_time:            pr.cycle_time,
+              created_at:            pr.created_at,
+              updated_at:            pr.updated_at,
+              state:                 pr.state,
+              base_branch:           pr.base_branch,
+              head_branch:           pr.head_branch,
+              commits:               pr.commits,
+              additions:             pr.additions,
+              deletions:             pr.deletions,
+              comments:              pr.comments,
+              url:                   pr.url,
+              state_changed_at:      pr.state_changed_at,
+              provider:              pr.provider,
+              reviewers:             pr.reviewers ? JSON.stringify(pr.reviewers) : null,
+              lead_time:             pr.lead_time,
+              merge_time:            pr.merge_time,
+              deploy_time:           pr.deploy_time,
+              first_response_time:   pr.first_response_time,
+              rework_time:           pr.rework_time,
+              merge_to_deploy:       pr.merge_to_deploy,
+            };
+          }
+
+          // ── Helper: map incident from Lambda response to DB schema ───────────
+          function mapIncident(incident, repoId, fetchDataId) {
+            const validUuid = v => {
+              if (!v || v === 'None' || v === 'null' || v === 'undefined') return null;
+              return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v) ? v : null;
+            };
+            let id = validUuid(incident.id);
+            if (!id) {
+              if (!incident.key) return null;
+              id = generateDeterministicUUID('incident', incident.key);
+            }
+            let workflowRunId = null;
+            if (incident.key?.startsWith('workflow-')) {
+              const n = incident.key.replace('workflow-', '');
+              if (n && !isNaN(n)) workflowRunId = parseInt(n, 10);
+            }
+            return {
+              id,
+              repo_id:          repoId,
+              fetch_data_id:    fetchDataId,
+              pull_request_id:  validUuid(incident.pull_request_id),
+              workflow_run_id:  workflowRunId,
+              pr_no:            incident.incident_number?.toString(),
+              creation_date:    incident.creation_date,
+              resolved_date:    incident.resolved_date,
+              created_at:       incident.creation_date,
+              title:            incident.title,
+              status:           incident.status?.replace('IncidentStatus.', ''),
+              incident_type:    incident.incident_type,
+              url:              incident.url,
+              provider:         incident.provider?.replace('IncidentProvider.', ''),
+              summary:          incident.summary,
+              assigned_to:      incident.assigned_to?.username,
+            };
+          }
+
+          // ── Helper: map workflow run from Lambda response to DB schema ───────
+          function mapWorkflowRun(run, repoId, fetchDataId) {
+            if (!run.id) return null;
+            let runId = run.id;
+            if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runId.toString())) {
+              runId = generateDeterministicUUID('workflow_run', runId.toString());
+            }
+            return {
+              id:            runId,
+              repo_id:       repoId,
+              fetch_data_id: fetchDataId,
+              run_id:        (run.run_id ?? run.id)?.toString(),
+              name:          run.name ?? run.workflow_name,
+              workflow_name: run.workflow_name ?? run.name,
+              workflow_file: run.workflow_file,
+              head_branch:   run.head_branch,
+              status:        run.status,
+              conclusion:    run.conclusion,
+              created_at:    run.created_at,
+              updated_at:    run.updated_at,
+              html_url:      run.html_url ?? run.url,
+              actor:         typeof run.actor === 'object' ? run.actor?.username : run.actor,
+              workflow_id:   run.workflow_id?.toString(),
+            };
+          }
+
+          // ── Helper: persist Lambda response body to Supabase ────────────────
+          async function persistRepoData(repo, responseBody, fetchedAt) {
+            const provider = detectProvider(repo);
+
+            // 1. Insert fetch_data record
+            const { data: fetchRecord, error: fetchErr } = await supabase
+              .from('fetch_data')
+              .insert({ repo_id: repo.id, fetched_at: fetchedAt, state: 'success', raw_response: responseBody })
+              .select('id')
+              .single();
+
+            if (fetchErr) {
+              log.error('Failed to create fetch_data record', { repo_id: repo.id, provider, error: fetchErr.message });
+              return { success: false };
+            }
+
+            const fetchDataId    = fetchRecord.id;
+            let totalPRs         = 0;
+            let totalIncidents   = 0;
+            let totalWorkflowRuns = 0;
+
+            for (const repoData of (responseBody.repos ?? [])) {
+              if (repoData.error) continue; // repo failed inside Lambda — skip
+
+              // Pull Requests
+              if (repoData.pull_requests?.length > 0) {
+                const prs = repoData.pull_requests.map(pr => mapPullRequest(pr, repo.id, fetchDataId)).filter(Boolean);
+                if (prs.length > 0) {
+                  const { error } = await supabase.from('pull_requests').upsert(prs, { onConflict: 'id', ignoreDuplicates: false });
+                  if (error) log.error('PR upsert error', { repo_id: repo.id, provider, error: error.message });
+                  else totalPRs += prs.length;
+                }
+              }
+
+              // Incidents
+              if (repoData.incidents?.length > 0) {
+                const incidents = repoData.incidents.map(inc => mapIncident(inc, repo.id, fetchDataId)).filter(Boolean);
+                if (incidents.length > 0) {
+                  const { error } = await supabase.from('incidents').upsert(incidents, { onConflict: 'id', ignoreDuplicates: false });
+                  if (error) log.error('Incidents upsert error', { repo_id: repo.id, provider, error: error.message });
+                  else totalIncidents += incidents.length;
+                }
+              }
+
+              // Workflow Runs
+              if (repoData.workflow_runs?.length > 0) {
+                const runs = repoData.workflow_runs.map(run => mapWorkflowRun(run, repo.id, fetchDataId)).filter(Boolean);
+                if (runs.length > 0) {
+                  const { error } = await supabase.from('workflow_runs').upsert(runs, { onConflict: 'id', ignoreDuplicates: false });
+                  if (error) log.error('Workflow runs upsert error', { repo_id: repo.id, provider, error: error.message });
+                  else totalWorkflowRuns += runs.length;
+                }
+              }
+            }
+
+            // 2. Update repos.last_fetched_at
+            const { error: repoUpdateErr } = await supabase
+              .from('repos')
+              .update({ last_fetched_at: fetchedAt })
+              .eq('id', repo.id);
+            if (repoUpdateErr) {
+              log.warn('Failed to update repos.last_fetched_at', { repo_id: repo.id, error: repoUpdateErr.message });
+            }
+
+            log.info('Persisted repo data to Supabase', {
+              repo_id:              repo.id,
+              provider,
+              fetch_data_id:        fetchDataId,
+              total_prs:            totalPRs,
+              total_incidents:      totalIncidents,
+              total_workflow_runs:  totalWorkflowRuns,
+            });
+
+            return { success: true };
+          }
+
           // ── Helper: call ingestion API with retry + exponential back-off ───────
           async function callIngestionApi(repo, fromTime, toTime, githubPatToken) {
             const provider = detectProvider(repo);
@@ -220,9 +407,8 @@ jobs:
                     status:       res.status,
                     attempt,
                     duration_ms,
-                    response:     body,
                   });
-                  return { success: true };
+                  return { success: true, body };
                 }
 
                 const errBody  = await res.text().catch(() => '');
@@ -343,9 +529,17 @@ jobs:
 
             log.info('Repo ingestion finished', { repo_id: repo.id, provider, duration_ms });
 
-            return result.success
-              ? { status: 'success' }
-              : { status: 'failed', error: result.error };
+            if (!result.success) {
+              return { status: 'failed', error: result.error };
+            }
+
+            // Persist Lambda response body to Supabase
+            const persisted = await persistRepoData(repo, result.body, toTime);
+            if (!persisted.success) {
+              return { status: 'failed', error: { message: 'persist_failed' } };
+            }
+
+            return { status: 'success' };
           }
 
           // ── Helper: run array of tasks in bounded parallel batches ─────────────
