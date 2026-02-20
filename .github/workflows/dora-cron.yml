@@ -167,94 +167,23 @@ jobs:
             ].join('-');
           }
 
-          // ── Helper: map PR from Lambda response to DB schema ──────────────────
-          // Only includes columns that exist in the pull_requests table.
-          function mapPullRequest(pr, repoId, fetchDataId) {
-            if (!pr.id) return null;
-            return {
-              id:                   pr.id,
-              repo_id:              repoId,
-              fetch_data_id:        fetchDataId,
-              pr_no:                pr.number?.toString() ?? pr.pr_no?.toString(),
-              title:                pr.title,
-              author:               typeof pr.author === 'object' ? pr.author?.username : pr.author,
-              first_commit_to_open: pr.first_commit_to_open,
-              cycle_time:           pr.cycle_time,
-              created_at:           pr.created_at,
-              updated_at:           pr.updated_at,
-              state:                pr.state,
-              base_branch:          pr.base_branch,
-              head_branch:          pr.head_branch,
-              commits:              pr.commits,
-              additions:            pr.additions,
-              deletions:            pr.deletions,
-              comments:             pr.comments,
-            };
-          }
-
-          // ── Helper: map incident from Lambda response to DB schema ───────────
-          function mapIncident(incident, repoId, fetchDataId) {
-            const validUuid = v => {
-              if (!v || v === 'None' || v === 'null' || v === 'undefined') return null;
-              return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v) ? v : null;
-            };
-            let id = validUuid(incident.id);
-            if (!id) {
-              if (!incident.key) return null;
-              id = generateDeterministicUUID('incident', incident.key);
-            }
-            let workflowRunId = null;
-            if (incident.key?.startsWith('workflow-')) {
-              const n = incident.key.replace('workflow-', '');
-              if (n && !isNaN(n)) workflowRunId = parseInt(n, 10);
-            }
-            return {
-              id,
-              repo_id:          repoId,
-              fetch_data_id:    fetchDataId,
-              pull_request_id:  validUuid(incident.pull_request_id),
-              workflow_run_id:  workflowRunId,
-              pr_no:            incident.incident_number?.toString(),
-              creation_date:    incident.creation_date,
-              resolved_date:    incident.resolved_date,
-              created_at:       incident.creation_date,
-              title:            incident.title,
-              status:           incident.status?.replace('IncidentStatus.', ''),
-              incident_type:    incident.incident_type,
-              url:              incident.url,
-              provider:         incident.provider?.replace('IncidentProvider.', ''),
-              summary:          incident.summary,
-              assigned_to:      incident.assigned_to?.username,
-            };
-          }
-
-          // ── Helper: map workflow run from Lambda response to DB schema ───────
-          function mapWorkflowRun(run, repoId, fetchDataId) {
-            if (!run.id) return null;
-            let runId = run.id;
-            if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runId.toString())) {
-              runId = generateDeterministicUUID('workflow_run', runId.toString());
-            }
-            return {
-              id:            runId,
-              repo_id:       repoId,
-              fetch_data_id: fetchDataId,
-              run_id:        (run.run_id ?? run.id)?.toString(),
-              name:          run.name ?? run.workflow_name,
-              workflow_name: run.workflow_name ?? run.name,
-              workflow_file: run.workflow_file,
-              head_branch:   run.head_branch,
-              status:        run.status,
-              conclusion:    run.conclusion,
-              created_at:    run.created_at,
-              updated_at:    run.updated_at,
-              html_url:      run.html_url ?? run.url,
-              actor:         typeof run.actor === 'object' ? run.actor?.username : run.actor,
-              workflow_id:   run.workflow_id?.toString(),
-            };
-          }
+          // ── Shared helpers used inside persistRepoData ────────────────────────
+          const toTs  = s => s == null ? null : typeof s === 'string' ? s : typeof s === 'number' ? new Date(s).toISOString() : null;
+          const toInt = v => { if (v == null) return null; const n = typeof v === 'number' ? v : parseInt(String(v), 10); return Number.isFinite(n) ? n : null; };
+          const toAuthor = a => {
+            if (a == null) return null;
+            if (typeof a === 'string') return a;
+            if (typeof a === 'object') return a.username ?? a.login ?? null;
+            return null;
+          };
 
           // ── Helper: persist Lambda response body to Supabase ────────────────
+          // Actual Lambda response shape (confirmed via parse-fetch-response.ts):
+          //   { repos: [ { deployments: [ { related_prs: [...] } ], workflow_runs: [...] } ] }
+          //   OR wrapped: { data: { repos: [...] } }
+          // PRs live inside deployments[].related_prs — NOT at repos[].pull_requests.
+          // PRs have no UUID id; DB auto-generates it (use insert, not upsert).
+          // Incidents are derived from workflow_run failures, not a direct field.
           async function persistRepoData(repo, responseBody, fetchedAt) {
             const provider = detectProvider(repo);
 
@@ -270,43 +199,127 @@ jobs:
               return { success: false };
             }
 
-            const fetchDataId    = fetchRecord.id;
-            let totalPRs         = 0;
-            let totalIncidents   = 0;
+            const fetchDataId     = fetchRecord.id;
+            let totalPRs          = 0;
+            let totalIncidents    = 0;
             let totalWorkflowRuns = 0;
 
-            for (const repoData of (responseBody.repos ?? [])) {
-              if (repoData.error) continue; // repo failed inside Lambda — skip
+            // Normalise root: handle both { repos:[...] } and { data:{ repos:[...] } }
+            const root  = responseBody ?? {};
+            const data  = root.data ?? root;
+            const repos = Array.isArray(data.repos) ? data.repos : [];
 
-              // Pull Requests
-              if (repoData.pull_requests?.length > 0) {
-                const prs = repoData.pull_requests.map(pr => mapPullRequest(pr, repo.id, fetchDataId)).filter(Boolean);
-                if (prs.length > 0) {
-                  const { error } = await supabase.from('pull_requests').upsert(prs, { onConflict: 'id', ignoreDuplicates: false });
-                  if (error) log.error('PR upsert error', { repo_id: repo.id, provider, error: error.message });
-                  else totalPRs += prs.length;
+            // ── Pull Requests ─────────────────────────────────────────────────
+            // PRs are nested: repos[].deployments[].related_prs[]
+            const seenPrNo = new Set();
+            for (const repoData of repos) {
+              if (repoData.error) continue;
+              const deployments = Array.isArray(repoData.deployments) ? repoData.deployments : [];
+              for (const dep of deployments) {
+                const prs = Array.isArray(dep.related_prs) ? dep.related_prs : [];
+                for (const pr of prs) {
+                  const no = pr.no ?? pr.number;
+                  if (no == null) continue;
+                  const prNo = typeof no === 'number' ? no : parseInt(String(no), 10);
+                  if (isNaN(prNo) || seenPrNo.has(prNo)) continue;
+                  seenPrNo.add(prNo);
+
+                  // id is auto-generated by the DB — do NOT include it
+                  const { error } = await supabase.from('pull_requests').insert({
+                    repo_id:              repo.id,
+                    fetch_data_id:        fetchDataId,
+                    pr_no:                prNo,
+                    title:                pr.title ?? null,
+                    author:               toAuthor(pr.author),
+                    first_commit_to_open: pr.first_commit_to_open ?? null,
+                    cycle_time:           pr.cycle_time ?? null,
+                    created_at:           toTs(pr.created_at),
+                    updated_at:           toTs(pr.updated_at),
+                    state:                pr.state ?? null,
+                    base_branch:          typeof pr.base_branch === 'string' ? pr.base_branch : null,
+                    head_branch:          typeof pr.head_branch === 'string' ? pr.head_branch : null,
+                    commits:              toInt(pr.commits),
+                    additions:            toInt(pr.additions),
+                    deletions:            toInt(pr.deletions),
+                    comments:             toInt(pr.comments),
+                  });
+                  if (!error) totalPRs++;
+                  else log.error('PR insert error', { repo_id: repo.id, provider, pr_no: prNo, error: error.message });
                 }
               }
+            }
 
-              // Incidents
-              if (repoData.incidents?.length > 0) {
-                const incidents = repoData.incidents.map(inc => mapIncident(inc, repo.id, fetchDataId)).filter(Boolean);
-                if (incidents.length > 0) {
-                  const { error } = await supabase.from('incidents').upsert(incidents, { onConflict: 'id', ignoreDuplicates: false });
-                  if (error) log.error('Incidents upsert error', { repo_id: repo.id, provider, error: error.message });
-                  else totalIncidents += incidents.length;
+            // ── Workflow Runs ─────────────────────────────────────────────────
+            // repos[].workflow_runs[] plus optional top-level data.workflow_runs[]
+            const workflowRunsRaw = [];
+            for (const repoData of repos) {
+              if (repoData.error) continue;
+              if (Array.isArray(repoData.workflow_runs)) workflowRunsRaw.push(...repoData.workflow_runs);
+            }
+            if (Array.isArray(data.workflow_runs)) workflowRunsRaw.push(...data.workflow_runs);
+
+            for (const wr of workflowRunsRaw) {
+              const rawId = wr.id ?? wr.run_id;
+              if (rawId == null) continue;
+              const rawIdStr = String(rawId);
+              const isUUID   = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawIdStr);
+              const uuidId   = isUUID ? rawIdStr : generateDeterministicUUID('workflow_run', rawIdStr);
+
+              const { error } = await supabase.from('workflow_runs').upsert({
+                id:            uuidId,
+                repo_id:       repo.id,
+                fetch_data_id: fetchDataId,
+                run_id:        rawIdStr,
+                name:          wr.name ?? wr.workflow_name ?? null,
+                workflow_name: wr.workflow_name ?? wr.name ?? null,
+                workflow_file: wr.workflow_file ?? null,
+                head_branch:   wr.head_branch ?? null,
+                status:        wr.status ?? null,
+                conclusion:    wr.conclusion ?? null,
+                created_at:    toTs(wr.created_at),
+                updated_at:    toTs(wr.updated_at),
+                html_url:      wr.html_url ?? wr.url ?? null,
+                actor:         toAuthor(wr.actor),
+                workflow_id:   wr.workflow_id?.toString() ?? null,
+              }, { onConflict: 'id', ignoreDuplicates: false });
+              if (!error) totalWorkflowRuns++;
+              else log.error('Workflow run upsert error', { repo_id: repo.id, provider, run_id: rawIdStr, error: error.message });
+            }
+
+            // ── Incidents (derived from workflow_run failures) ─────────────────
+            // A failed run = incident creation; next success run = resolved date.
+            const runsWithMeta = [];
+            for (const wr of workflowRunsRaw) {
+              const rawId  = wr.id ?? wr.run_id;
+              const created = toTs(wr.created_at);
+              if (rawId == null || created == null) continue;
+              const id = typeof rawId === 'number' ? rawId : parseInt(String(rawId), 10);
+              if (isNaN(id)) continue;
+              runsWithMeta.push({ runId: id, created_at: created, conclusion: typeof wr.conclusion === 'string' ? wr.conclusion : null });
+            }
+            runsWithMeta.sort((a, b) => a.created_at.localeCompare(b.created_at));
+
+            for (let i = 0; i < runsWithMeta.length; i++) {
+              const run = runsWithMeta[i];
+              if ((run.conclusion ?? '').toLowerCase() !== 'failure') continue;
+              let resolvedDate = null;
+              for (let j = i + 1; j < runsWithMeta.length; j++) {
+                if ((runsWithMeta[j].conclusion ?? '').toLowerCase() === 'success') {
+                  resolvedDate = runsWithMeta[j].created_at;
+                  break;
                 }
               }
-
-              // Workflow Runs
-              if (repoData.workflow_runs?.length > 0) {
-                const runs = repoData.workflow_runs.map(run => mapWorkflowRun(run, repo.id, fetchDataId)).filter(Boolean);
-                if (runs.length > 0) {
-                  const { error } = await supabase.from('workflow_runs').upsert(runs, { onConflict: 'id', ignoreDuplicates: false });
-                  if (error) log.error('Workflow runs upsert error', { repo_id: repo.id, provider, error: error.message });
-                  else totalWorkflowRuns += runs.length;
-                }
-              }
+              const { error } = await supabase.from('incidents').insert({
+                repo_id:         repo.id,
+                fetch_data_id:   fetchDataId,
+                pull_request_id: null,
+                workflow_run_id: run.runId,
+                pr_no:           null,
+                creation_date:   run.created_at,
+                resolved_date:   resolvedDate,
+              });
+              if (!error) totalIncidents++;
+              else log.error('Incident insert error', { repo_id: repo.id, provider, error: error.message });
             }
 
             // 2. Update repos.last_fetched_at
