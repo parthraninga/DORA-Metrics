@@ -155,11 +155,16 @@ jobs:
           // ── Helper: call ingestion API with retry + exponential back-off ───────
           async function callIngestionApi(repo, fromTime, toTime, githubPatToken) {
             const provider = detectProvider(repo);
-            const payload  = {
-              repo_id:          repo.id,
-              from_time:        fromTime,
-              to_time:          toTime,
-              github_pat_token: githubPatToken, // never logged
+            const payload = {
+              github_pat_token: githubPatToken,
+              repos: [
+                {
+                  org_name: repo.org_name,
+                  repo_name: repo.repo_name
+                }
+              ],
+              from_time: fromTime,
+              to_time: toTime,
             };
             let lastError;
             const apiCallStart = Date.now();
