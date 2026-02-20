@@ -623,6 +623,8 @@ const AddRepoModal = ({
 
   const selectedToken = tokens.value.find((t) => t.id === tokenId.value);
   const isGitHub = selectedToken?.type === 'github';
+  const isBitbucket = selectedToken?.type === 'bitbucket';
+  const supportsOrgRepoFlow = isGitHub || isBitbucket;
 
   // Load tokens when modal opens
   useEffect(() => {
@@ -651,14 +653,14 @@ const AddRepoModal = ({
     }
   }, [open]);
 
-  // Fetch branches when repo is selected (GitHub)
+  // Fetch branches when repo is selected (GitHub or Bitbucket)
   useEffect(() => {
     if (
       !open ||
       !tokenId.value ||
       !orgName.value.trim() ||
       !repoName.value ||
-      !isGitHub
+      !supportsOrgRepoFlow
     ) {
       branchOptions.set([]);
       devBranch.set('');
@@ -678,7 +680,7 @@ const AddRepoModal = ({
     tokenId.value,
     orgName.value,
     repoName.value,
-    isGitHub,
+    supportsOrgRepoFlow,
     loadingBranches.false,
     loadingBranches.true,
     branchOptions.set,
@@ -687,9 +689,9 @@ const AddRepoModal = ({
     prodBranch.set,
   ]);
 
-  // Fetch organisations for the selected GitHub token
+  // Fetch organisations/workspaces for the selected token (GitHub or Bitbucket)
   useEffect(() => {
-    if (!open || !tokenId.value || !isGitHub) {
+    if (!open || !tokenId.value || !supportsOrgRepoFlow) {
       orgOptions.set([]);
       orgName.set('');
       return;
@@ -702,11 +704,11 @@ const AddRepoModal = ({
       .then((data) => orgOptions.set(data || []))
       .catch(() => orgOptions.set([]))
       .finally(() => loadingOrgs.false());
-  }, [open, tokenId.value, isGitHub, loadingOrgs.false, loadingOrgs.true, orgName.set, orgOptions.set, repoName.set, repoOptions.set]);
+  }, [open, tokenId.value, supportsOrgRepoFlow, loadingOrgs.false, loadingOrgs.true, orgName.set, orgOptions.set, repoName.set, repoOptions.set]);
 
-  // Fetch org repos when token (github) + org name available (debounced)
+  // Fetch org repos when token (GitHub or Bitbucket) + org/workspace name available (debounced)
   useEffect(() => {
-    if (!open || !tokenId.value || !orgName.value.trim() || !isGitHub) {
+    if (!open || !tokenId.value || !orgName.value.trim() || !supportsOrgRepoFlow) {
       repoOptions.set([]);
       repoName.set('');
       return;
@@ -722,9 +724,9 @@ const AddRepoModal = ({
         .finally(() => loadingRepos.false());
     }, 400);
     return () => clearTimeout(t);
-  }, [open, tokenId.value, orgName.value, isGitHub, loadingRepos.false, loadingRepos.true, repoName.set, repoOptions.set]);
+  }, [open, tokenId.value, orgName.value, supportsOrgRepoFlow, loadingRepos.false, loadingRepos.true, repoName.set, repoOptions.set]);
 
-  // Fetch workflows when CI-CD + repo selected
+  // Fetch workflows when CI-CD + repo selected (GitHub or Bitbucket)
   useEffect(() => {
     if (
       !open ||
@@ -732,7 +734,7 @@ const AddRepoModal = ({
       !tokenId.value ||
       !orgName.value.trim() ||
       !repoName.value ||
-      !isGitHub
+      !supportsOrgRepoFlow
     ) {
       workflowOptions.set([]);
       workflowFile.set('');
@@ -754,7 +756,7 @@ const AddRepoModal = ({
     tokenId.value,
     orgName.value,
     repoName.value,
-    isGitHub,
+    supportsOrgRepoFlow,
     loadingWorkflows.false,
     loadingWorkflows.true,
     workflowFile.set,
@@ -843,8 +845,10 @@ const AddRepoModal = ({
                 helperText={
                   loadingOrgs.value
                     ? 'Loading organisations...'
-                    : isGitHub && orgOptions.value.length === 0
-                    ? 'No organisations found. You can still type an org or username manually.'
+                    : supportsOrgRepoFlow && orgOptions.value.length === 0
+                    ? 'No organisations/workspaces found. You can still type manually.'
+                    : !supportsOrgRepoFlow
+                    ? 'Select a GitHub or Bitbucket token to load organisations/workspaces.'
                     : 'Select from list or type manually'
                 }
                 InputProps={{
@@ -876,8 +880,8 @@ const AddRepoModal = ({
                 helperText={
                   loadingRepos.value
                     ? 'Loading repositories...'
-                    : !isGitHub
-                    ? 'Repo list only available for GitHub tokens. Type manually for other providers.'
+                    : !supportsOrgRepoFlow
+                    ? 'Repo list only available for GitHub or Bitbucket tokens. Type manually for other providers.'
                     : repoOptions.value.length === 0 && orgName.value.trim()
                     ? 'No repositories found. You can still type manually.'
                     : 'Select from list or type manually'
@@ -931,10 +935,10 @@ const AddRepoModal = ({
                   helperText={
                     loadingWorkflows.value
                       ? 'Loading workflows...'
-                      : !isGitHub
-                      ? 'Workflow list only available for GitHub tokens. Type manually for other providers.'
+                      : !supportsOrgRepoFlow
+                      ? 'Workflow list only available for GitHub or Bitbucket tokens. Type manually for other providers.'
                       : workflowOptions.value.length === 0 && repoName.value
-                      ? 'No workflows found. You can still type manually (e.g., .github/workflows/deploy.yml)'
+                      ? 'No workflows found. You can still type manually (e.g., .github/workflows/deploy.yml or bitbucket-pipelines.yml)'
                       : 'Select from list or type manually'
                   }
                   InputProps={{
@@ -1037,6 +1041,8 @@ const EditRepoModal = ({
 
   const selectedToken = tokens.value.find((t) => t.id === tokenId.value);
   const isGitHub = selectedToken?.type === 'github';
+  const isBitbucket = selectedToken?.type === 'bitbucket';
+  const supportsOrgRepoFlow = isGitHub || isBitbucket;
 
   // Load tokens when modal opens
   useEffect(() => {
@@ -1077,7 +1083,7 @@ const EditRepoModal = ({
       !tokenId.value ||
       !repo.org_name ||
       !repo.repo_name ||
-      !isGitHub
+      !supportsOrgRepoFlow
     ) {
       workflowOptions.set([]);
       return;
@@ -1089,11 +1095,11 @@ const EditRepoModal = ({
       .then((data) => workflowOptions.set(data || []))
       .catch(() => workflowOptions.set([]))
       .finally(() => loadingWorkflows.false());
-  }, [open, repo, cfrType.value, tokenId.value, isGitHub, loadingWorkflows.false, loadingWorkflows.true, workflowOptions.set]);
+  }, [open, repo, cfrType.value, tokenId.value, supportsOrgRepoFlow, loadingWorkflows.false, loadingWorkflows.true, workflowOptions.set]);
 
   // Fetch branches when repo loaded
   useEffect(() => {
-    if (!open || !repo || !tokenId.value || !repo.org_name || !repo.repo_name || !isGitHub) {
+    if (!open || !repo || !tokenId.value || !repo.org_name || !repo.repo_name || !supportsOrgRepoFlow) {
       branchOptions.set([]);
       return;
     }
@@ -1104,7 +1110,7 @@ const EditRepoModal = ({
       .then((data) => branchOptions.set(data || []))
       .catch(() => branchOptions.set([]))
       .finally(() => loadingBranches.false());
-  }, [open, repo, tokenId.value, isGitHub, loadingBranches.false, loadingBranches.true, branchOptions.set]);
+  }, [open, repo, tokenId.value, supportsOrgRepoFlow, loadingBranches.false, loadingBranches.true, branchOptions.set]);
 
   const handleSubmit = async () => {
     if (!repoId) return;
@@ -1216,10 +1222,10 @@ const EditRepoModal = ({
                       helperText={
                         loadingWorkflows.value
                           ? 'Loading workflows...'
-                          : !isGitHub
-                          ? 'Workflow list only available for GitHub tokens. Type manually for other providers.'
+                          : !supportsOrgRepoFlow
+                          ? 'Workflow list only available for GitHub or Bitbucket tokens. Type manually for other providers.'
                           : workflowOptions.value.length === 0
-                          ? 'No workflows found. You can still type manually (e.g., .github/workflows/deploy.yml)'
+                          ? 'No workflows found. You can still type manually (e.g., .github/workflows/deploy.yml or bitbucket-pipelines.yml)'
                           : 'Select from list or type manually'
                       }
                       InputProps={{

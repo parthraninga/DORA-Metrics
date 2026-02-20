@@ -262,6 +262,7 @@ const TokenModal = ({
   const name = useEasyState('');
   const token = useEasyState('');
   const type = useEasyState<TokenType>('github');
+  const email = useEasyState('');
   const saving = useBoolState(false);
   const error = useEasyState('');
 
@@ -270,16 +271,20 @@ const TokenModal = ({
   const loadEdit = useCallback(async () => {
     if (!editId) return;
     try {
-      const row = await handleApi<{ name: string; token: string; type: TokenType }>(
-        `/tokens/${editId}`
-      );
+      const row = await handleApi<{
+        name: string;
+        token: string;
+        type: TokenType;
+        email?: string;
+      }>(`/tokens/${editId}`);
       name.set(row.name);
       token.set(row.token);
       type.set(row.type);
+      email.set(row.email ?? '');
     } catch (e) {
       console.error(e);
     }
-  }, [editId, name.set, token.set, type.set]);
+  }, [editId, name.set, token.set, type.set, email.set]);
 
   useEffect(() => {
     if (open && editId) loadEdit();
@@ -287,9 +292,10 @@ const TokenModal = ({
       name.set('');
       token.set('');
       type.set('github');
+      email.set('');
     }
     if (!open) error.set('');
-  }, [open, editId, loadEdit, name.set, token.set, type.set, error.set]);
+  }, [open, editId, loadEdit, name.set, token.set, type.set, email.set, error.set]);
 
   const handleSubmit = async () => {
     error.set('');
@@ -301,19 +307,35 @@ const TokenModal = ({
       error.set('Token is required');
       return;
     }
+    if (type.value === 'bitbucket' && !email.value.trim()) {
+      error.set('Email is required for Bitbucket tokens');
+      return;
+    }
     saving.true();
     try {
+      const emailValue = type.value === 'bitbucket' ? email.value.trim() : undefined;
       if (isEdit) {
-        const payload: { name: string; token?: string; type: TokenType } = {
+        const payload: {
+          name: string;
+          token?: string;
+          type: TokenType;
+          email?: string | null;
+        } = {
           name: name.value.trim(),
           type: type.value,
         };
         if (token.value.trim()) payload.token = token.value.trim();
+        if (type.value === 'bitbucket') payload.email = emailValue ?? null;
         await handleApi(`/tokens/${editId}`, { method: 'PATCH', data: payload });
       } else {
         await handleApi('/tokens', {
           method: 'POST',
-          data: { name: name.value.trim(), token: token.value.trim(), type: type.value },
+          data: {
+            name: name.value.trim(),
+            token: token.value.trim(),
+            type: type.value,
+            ...(type.value === 'bitbucket' && { email: emailValue }),
+          },
         });
       }
       onSaved();
@@ -372,6 +394,17 @@ const TokenModal = ({
               </MenuItem>
             ))}
           </TextField>
+          {type.value === 'bitbucket' && (
+            <TextField
+              fullWidth
+              label="Email"
+              type="email"
+              value={email.value}
+              onChange={(e) => email.set(e.target.value)}
+              placeholder="Your Bitbucket / Atlassian account email"
+              helperText="Required for Bitbucket API authentication"
+            />
+          )}
           {error.value && (
             <Line error small>
               {error.value}

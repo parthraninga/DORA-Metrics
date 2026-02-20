@@ -10,6 +10,7 @@ const postSchema = yup.object({
   name: yup.string().required().min(1).max(200),
   token: yup.string().required().min(1),
   type: yup.string().oneOf(TOKEN_TYPES).required(),
+  email: yup.string().max(256).nullable().optional(),
 });
 
 const endpoint = new Endpoint(nullSchema);
@@ -17,7 +18,7 @@ const endpoint = new Endpoint(nullSchema);
 endpoint.handle.GET(getSchema, async (_req, res) => {
   const { data, error } = await supabaseServer
     .from('tokens')
-    .select('id, name, token, type, created_at')
+    .select('id, name, token, type, email, created_at')
     .order('created_at', { ascending: false });
 
   if (error) {
@@ -36,11 +37,14 @@ endpoint.handle.GET(getSchema, async (_req, res) => {
 });
 
 endpoint.handle.POST(postSchema, async (req, res) => {
-  const { name, token, type } = req.payload;
+  const { name, token, type, email } = req.payload;
+
+  const insertPayload: Record<string, unknown> = { name, token, type };
+  if (email !== undefined) insertPayload.email = email || null;
 
   const { data, error } = await supabaseServer
     .from('tokens')
-    .insert({ name, token, type })
+    .insert(insertPayload)
     .select('id, name, type, created_at')
     .single();
 

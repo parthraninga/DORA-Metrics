@@ -21,6 +21,10 @@ const LAMBDA_FETCH_URL =
   process.env.LAMBDA_FETCH_URL ||
   'https://rorxix2ixb5u74brkfubsv7rw40asact.lambda-url.ap-south-1.on.aws/';
 
+const BITBUCKET_LAMBDA_FETCH_URL =
+  process.env.BITBUCKET_LAMBDA_FETCH_URL ||
+  'https://5hmjbahzmdlhp7fbi4qqu4iuoi0yaopc.lambda-url.ap-south-1.on.aws/';
+
 const endpoint = new Endpoint(pathSchema);
 
 endpoint.handle.POST(postSchema, async (req, res) => {
@@ -38,7 +42,7 @@ endpoint.handle.POST(postSchema, async (req, res) => {
 
   const { data: tokenRow } = await supabaseServer
     .from('tokens')
-    .select('token')
+    .select('token, type, email')
     .eq('id', (repo as { token_id: string }).token_id)
     .single();
 
@@ -46,6 +50,9 @@ endpoint.handle.POST(postSchema, async (req, res) => {
   if (!token) {
     return res.status(400).send({ error: 'Repo token not found or invalid' });
   }
+
+  const tokenType = ((tokenRow as { type?: string } | null)?.type ?? '').toLowerCase();
+  const fetchUrl = tokenType === 'bitbucket' ? BITBUCKET_LAMBDA_FETCH_URL : LAMBDA_FETCH_URL;
 
   const repoRow = repo as {
     id: string;
@@ -66,31 +73,60 @@ endpoint.handle.POST(postSchema, async (req, res) => {
         .replace(/\.\d{3}Z$/, 'Z');
 
   const type = repoRow.cfr_type === 'CI-CD' ? 2 : 1;
-  const body = {
-    github_pat_token: token,
-    repos: [
-      {
-        org_name: repoRow.org_name,
-        repo_name: repoRow.repo_name,
-        deployment_type: 'PR_MERGE',
-      },
-    ],
-    from_time: fromTime,
-    to_time: toTime,
-    type,
-    ...(type === 2 && repoRow.workflow_file
-      ? { workflow_file: repoRow.workflow_file }
-      : {}),
-  };
+  const reposPayload = [
+    {
+      org_name: repoRow.org_name,
+      repo_name: repoRow.repo_name,
+      deployment_type: 'PR_MERGE' as const,
+    },
+  ];
 
-  console.log('🚀 Fetch Request Details:', {
+  let body: Record<string, unknown>;
+  if (tokenType === 'bitbucket') {
+    const email = (tokenRow as { email?: string | null } | null)?.email?.trim();
+    if (!email) {
+      return res.status(400).send({ error: 'Bitbucket token is missing email. Set it in Integrations.' });
+    }
+    body = {
+      email,
+      bitbucket_pat_token: token,
+      repos: reposPayload,
+      from_time: fromTime,
+      to_time: toTime,
+      type,
+      ...(type === 2 && repoRow.workflow_file ? { workflow_file: repoRow.workflow_file } : {}),
+    };
+  } else {
+    body = {
+      github_pat_token: token,
+      repos: reposPayload,
+      from_time: fromTime,
+      to_time: toTime,
+      type,
+      ...(type === 2 && repoRow.workflow_file ? { workflow_file: repoRow.workflow_file } : {}),
+    };
+  }
+
+  const provider = tokenType === 'bitbucket' ? 'Bitbucket' : 'GitHub';
+  const bodyForLog = {
+    ...body,
+    ...(body.github_pat_token ? { github_pat_token: '***MASKED***' } : {}),
+    ...(body.bitbucket_pat_token ? { bitbucket_pat_token: '***MASKED***' } : {}),
+  };
+  console.log('========== FETCH: API & INPUT ==========');
+  console.log('Which API:', fetchUrl);
+  console.log('Token type (DB):', tokenType || 'github');
+  console.log('Input (body, tokens masked):', JSON.stringify(bodyForLog, null, 2));
+  console.log('========================================');
+  console.log(`🚀 Fetch Request Details: Using ${provider} Lambda`, {
     repoId,
     repo: `${repoRow.org_name}/${repoRow.repo_name}`,
     fromTime,
     toTime,
     type: type === 2 ? 'CI-CD' : 'PR_MERGE',
     workflow: repoRow.workflow_file || 'N/A',
-    lambdaUrl: LAMBDA_FETCH_URL
+    tokenType: tokenType || 'github',
+    lambdaUrl: fetchUrl
   });
 
   // Redis: serve from cache when available
@@ -131,6 +167,7 @@ endpoint.handle.POST(postSchema, async (req, res) => {
             return res.status(202).send({
               message: 'Fetch completed (from cache)',
               repo_id: repoId,
+              provider: tokenType === 'bitbucket' ? 'bitbucket' : 'github',
             });
           }
         }
@@ -157,17 +194,17 @@ endpoint.handle.POST(postSchema, async (req, res) => {
 
   (async () => {
     try {
-      console.log('📡 Calling Lambda URL:', LAMBDA_FETCH_URL);
-      console.log('📦 Request Body:', JSON.stringify(body, null, 2));
-      
+      console.log('📡 Calling Lambda now:', fetchUrl);
+
       let response;
       let rawResponse: unknown;
       
+      const headers = { 'Content-Type': 'application/json' };
       try {
         // Use axios for better error handling and SSL support
         // No timeout - let Lambda take as long as it needs
-        response = await axios.post(LAMBDA_FETCH_URL, body, {
-          headers: { 'Content-Type': 'application/json' },
+        response = await axios.post(fetchUrl, body, {
+          headers,
           timeout: 0, // No timeout - wait indefinitely
           validateStatus: () => true, // Don't throw on any status code
         });
@@ -261,7 +298,11 @@ endpoint.handle.POST(postSchema, async (req, res) => {
     }
   })();
 
-  return res.status(202).send({ message: 'Fetch started', repo_id: repoId });
+  return res.status(202).send({
+    message: 'Fetch started',
+    repo_id: repoId,
+    provider: tokenType === 'bitbucket' ? 'bitbucket' : 'github',
+  });
 });
 
 export default endpoint.serve();

@@ -10,23 +10,55 @@ const getSchema = yup.object({
 
 const endpoint = new Endpoint(nullSchema);
 
+function bitbucketAuth(email: string, token: string): string {
+  const encoded = Buffer.from(`${email}:${token}`, 'utf8').toString('base64');
+  return `Basic ${encoded}`;
+}
+
 endpoint.handle.GET(getSchema, async (req, res) => {
   const { token_id, org_name, repo_name } = req.payload;
 
   const { data: tokenRow, error: tokenError } = await supabaseServer
     .from('tokens')
-    .select('token, type')
+    .select('token, type, email')
     .eq('id', token_id)
     .single();
 
   if (tokenError || !tokenRow?.token) {
     return res.status(400).send({ error: 'Token not found' });
   }
-  if (tokenRow.type !== 'github') {
-    return res.status(400).send({ error: 'Only GitHub tokens are supported for listing branches' });
-  }
 
   const token = (tokenRow.token as string).trim();
+  const type = tokenRow.type as string;
+
+  if (type === 'bitbucket') {
+    const email = (tokenRow.email as string)?.trim();
+    if (!email) {
+      return res.status(400).send({ error: 'Bitbucket token is missing email' });
+    }
+    const auth = bitbucketAuth(email, token);
+    const workspace = encodeURIComponent(org_name);
+    const repoSlug = encodeURIComponent(repo_name);
+    const bbRes = await fetch(
+      `https://api.bitbucket.org/2.0/repositories/${workspace}/${repoSlug}/refs/branches?pagelen=100`,
+      { headers: { Authorization: auth, Accept: 'application/json' } }
+    );
+    if (!bbRes.ok) {
+      const err = (await bbRes.text()) || 'Bitbucket API error';
+      return res.status(bbRes.status).send({ error: err });
+    }
+    const data = await bbRes.json();
+    const values = Array.isArray(data.values) ? data.values : [];
+    const names = values
+      .map((b: { name?: string }) => b.name)
+      .filter((n): n is string => typeof n === 'string');
+    return res.status(200).send(names);
+  }
+
+  if (type !== 'github') {
+    return res.status(400).send({ error: 'Only GitHub and Bitbucket tokens are supported for listing branches' });
+  }
+
   const owner = encodeURIComponent(org_name);
   const repo = encodeURIComponent(repo_name);
   const url = `https://api.github.com/repos/${owner}/${repo}/branches?per_page=100`;

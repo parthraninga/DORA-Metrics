@@ -15,18 +15,29 @@ endpoint.handle.GET(getSchema, async (req, res) => {
 
   const { data: tokenRow, error: tokenError } = await supabaseServer
     .from('tokens')
-    .select('token, type')
+    .select('token, type, email')
     .eq('id', token_id)
     .single();
 
   if (tokenError || !tokenRow?.token) {
     return res.status(400).send({ error: 'Token not found' });
   }
-  if (tokenRow.type !== 'github') {
-    return res.status(400).send({ error: 'Only GitHub tokens are supported for workflows' });
-  }
 
   const token = (tokenRow.token as string).trim();
+  const type = tokenRow.type as string;
+
+  if (type === 'bitbucket') {
+    // Bitbucket Pipelines use a single config file: bitbucket-pipelines.yml
+    const list = [
+      { id: 0, name: 'Bitbucket Pipelines', path: 'bitbucket-pipelines.yml', state: 'active' },
+    ];
+    return res.status(200).send(list);
+  }
+
+  if (type !== 'github') {
+    return res.status(400).send({ error: 'Only GitHub and Bitbucket tokens are supported for workflows' });
+  }
+
   const owner = encodeURIComponent(org_name);
   const repo = encodeURIComponent(repo_name);
   const url = `https://api.github.com/repos/${owner}/${repo}/actions/workflows?per_page=100`;
@@ -46,12 +57,14 @@ endpoint.handle.GET(getSchema, async (req, res) => {
 
   const data = await ghRes.json();
   const workflows = Array.isArray(data?.workflows) ? data.workflows : [];
-  const list = workflows.map((w: { id?: number; name?: string; path?: string; state?: string }) => ({
-    id: w.id ?? 0,
-    name: w.name ?? '',
-    path: w.path ?? '',
-    state: w.state ?? '',
-  })).filter((w) => w.path);
+  const list = workflows
+    .map((w: { id?: number; name?: string; path?: string; state?: string }) => ({
+      id: w.id ?? 0,
+      name: w.name ?? '',
+      path: w.path ?? '',
+      state: w.state ?? '',
+    }))
+    .filter((w) => w.path);
   return res.status(200).send(list);
 });
 

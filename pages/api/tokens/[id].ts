@@ -12,6 +12,7 @@ const patchSchema = yup.object({
   name: yup.string().min(1).max(200).optional(),
   token: yup.string().min(1).optional(),
   type: yup.string().oneOf(TOKEN_TYPES).optional(),
+  email: yup.string().max(256).nullable().optional(),
 });
 
 const endpoint = new Endpoint(pathSchema);
@@ -21,7 +22,7 @@ endpoint.handle.GET(nullSchema, async (req, res) => {
 
   const { data, error } = await supabaseServer
     .from('tokens')
-    .select('id, name, token, type, created_at')
+    .select('id, name, token, type, email, created_at')
     .eq('id', id)
     .single();
 
@@ -34,6 +35,7 @@ endpoint.handle.GET(nullSchema, async (req, res) => {
     name: data.name,
     token: data.token,
     type: data.type,
+    email: data.email ?? undefined,
     created_at: data.created_at,
     token_masked: maskToken(data.token || ''),
   });
@@ -41,11 +43,12 @@ endpoint.handle.GET(nullSchema, async (req, res) => {
 
 endpoint.handle.PATCH(patchSchema, async (req, res) => {
   const { id } = req.payload;
-  const updates: { name?: string; token?: string; type?: TokenType } = {};
+  const updates: { name?: string; token?: string; type?: TokenType; email?: string | null } = {};
 
   if (req.payload.name !== undefined) updates.name = req.payload.name;
   if (req.payload.token !== undefined) updates.token = req.payload.token;
   if (req.payload.type !== undefined) updates.type = req.payload.type;
+  if (req.payload.email !== undefined) updates.email = req.payload.email ?? null;
 
   if (Object.keys(updates).length === 0) {
     return res.status(400).send({ error: 'No fields to update' });
