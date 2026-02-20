@@ -265,14 +265,14 @@ jobs:
               const isUUID   = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawIdStr);
               const uuidId   = isUUID ? rawIdStr : generateDeterministicUUID('workflow_run', rawIdStr);
 
+              // workflow_runs columns: id, repo_id, fetch_data_id, run_id, name,
+              // head_branch, status, conclusion, created_at, updated_at, html_url, actor, workflow_id
               const { error } = await supabase.from('workflow_runs').upsert({
                 id:            uuidId,
                 repo_id:       repo.id,
                 fetch_data_id: fetchDataId,
                 run_id:        rawIdStr,
                 name:          wr.name ?? wr.workflow_name ?? null,
-                workflow_name: wr.workflow_name ?? wr.name ?? null,
-                workflow_file: wr.workflow_file ?? null,
                 head_branch:   wr.head_branch ?? null,
                 status:        wr.status ?? null,
                 conclusion:    wr.conclusion ?? null,
@@ -309,6 +309,8 @@ jobs:
                   break;
                 }
               }
+              // incidents columns: id, repo_id, fetch_data_id, pull_request_id,
+              // workflow_run_id, created_at, pr_no, creation_date, resolved_date
               const { error } = await supabase.from('incidents').insert({
                 repo_id:         repo.id,
                 fetch_data_id:   fetchDataId,
@@ -317,6 +319,7 @@ jobs:
                 pr_no:           null,
                 creation_date:   run.created_at,
                 resolved_date:   resolvedDate,
+                created_at:      run.created_at,
               });
               if (!error) totalIncidents++;
               else log.error('Incident insert error', { repo_id: repo.id, provider, error: error.message });
