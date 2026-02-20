@@ -22,7 +22,7 @@ jobs:
   ingest:
     name: Ingest DORA Metrics
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
       - name: Setup Node.js
@@ -34,7 +34,7 @@ jobs:
         run: npm install @supabase/supabase-js@2
 
       - name: Run ingestion orchestration
-        timeout-minutes: 28
+        timeout-minutes: 58
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -56,7 +56,7 @@ jobs:
           const RECENT_SKIP_MINUTES    = 5;        // skip repos fetched within this window
           const BATCH_SIZE             = 5;        // parallel concurrency per batch
           const PAGE_SIZE              = 1000;     // Supabase rows per page
-          const REQUEST_TIMEOUT_MS     = 30_000;   // per-request timeout
+          const REQUEST_TIMEOUT_MS     = 120_000;  // per-request timeout (2 min — longest observed success was 26s, heavy repos ~60-90s)
 
           // ── Structured logger ──────────────────────────────────────────────────
           const log = {
