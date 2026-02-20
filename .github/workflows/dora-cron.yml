@@ -177,43 +177,78 @@ jobs:
             return null;
           };
 
-          // ── Helper: persist Lambda response body to Supabase ────────────────
-          // Actual Lambda response shape (confirmed via parse-fetch-response.ts):
-          //   { repos: [ { deployments: [ { related_prs: [...] } ], workflow_runs: [...] } ] }
+          // ── parseAndStoreResponse: mirrors src/lib/parse-fetch-response.ts ──────
+          // Called after fetch_data insertion to populate pull_requests,
+          // workflow_runs, and incidents from the raw Lambda response body.
+          //
+          // Lambda response shape:
+          //   { repos: [ {
+          //       pull_requests: [...],          ← PRs with UUID ids   (upsert on id)
+          //       deployments:   [ { related_prs: [...] } ],  ← same PR objects
+          //       workflow_runs: [...],
+          //       incidents:     [...],
+          //   } ] }
           //   OR wrapped: { data: { repos: [...] } }
-          // PRs live inside deployments[].related_prs — NOT at repos[].pull_requests.
-          // PRs have no UUID id; DB auto-generates it (use insert, not upsert).
-          // Incidents are derived from workflow_run failures, not a direct field.
-          async function persistRepoData(repo, responseBody, fetchedAt) {
-            const provider = detectProvider(repo);
-
-            // 1. Insert fetch_data record
-            const { data: fetchRecord, error: fetchErr } = await supabase
-              .from('fetch_data')
-              .insert({ repo_id: repo.id, fetched_at: fetchedAt, state: 'success', raw_response: responseBody })
-              .select('id')
-              .single();
-
-            if (fetchErr) {
-              log.error('Failed to create fetch_data record', { repo_id: repo.id, provider, error: fetchErr.message });
-              return { success: false };
-            }
-
-            const fetchDataId     = fetchRecord.id;
-            let totalPRs          = 0;
-            let totalIncidents    = 0;
-            let totalWorkflowRuns = 0;
-
-            // Normalise root: handle both { repos:[...] } and { data:{ repos:[...] } }
+          //
+          // PRs  : prefer repos[].pull_requests[] (has stable UUIDs); fall back to
+          //        deployments[].related_prs[] so both old and new Lambda shapes work.
+          // WRs  : repos[].workflow_runs[] + optional top-level data.workflow_runs[]
+          // Incs : repos[].incidents[] first (Lambda-derived); then derive synthetic
+          //        incidents from workflow_run failure→success transitions (mirroring
+          //        the parse-fetch-response.ts fallback logic).
+          async function parseAndStoreResponse(repoId, fetchDataId, responseBody) {
             const root  = responseBody ?? {};
             const data  = root.data ?? root;
             const repos = Array.isArray(data.repos) ? data.repos : [];
 
+            let totalPRs = 0, totalIncidents = 0, totalWorkflowRuns = 0;
+
             // ── Pull Requests ─────────────────────────────────────────────────
-            // PRs are nested: repos[].deployments[].related_prs[]
-            const seenPrNo = new Set();
+            // Collect from repos[].pull_requests[] (UUID ids — upsert) and from
+            // deployments[].related_prs[] (no id — insert, deduplicate on pr_no).
+            const seenId    = new Set();
+            const seenPrNo  = new Set();
+
             for (const repoData of repos) {
               if (repoData.error) continue;
+
+              // Source 1: repos[].pull_requests[] — contains stable UUID ids
+              if (Array.isArray(repoData.pull_requests)) {
+                const toUpsert = [];
+                for (const pr of repoData.pull_requests) {
+                  if (!pr.id || seenId.has(pr.id)) continue;
+                  seenId.add(pr.id);
+                  seenPrNo.add(pr.number ?? pr.pr_no); // mark prNo as covered
+                  toUpsert.push({
+                    id:                   pr.id,
+                    repo_id:              repoId,
+                    fetch_data_id:        fetchDataId,
+                    pr_no:                pr.number?.toString() ?? pr.pr_no?.toString() ?? null,
+                    title:                pr.title ?? null,
+                    author:               toAuthor(pr.author),
+                    first_commit_to_open: pr.first_commit_to_open ?? null,
+                    cycle_time:           pr.cycle_time ?? null,
+                    created_at:           toTs(pr.created_at),
+                    updated_at:           toTs(pr.updated_at),
+                    state:                pr.state ?? null,
+                    base_branch:          typeof pr.base_branch === 'string' ? pr.base_branch : null,
+                    head_branch:          typeof pr.head_branch === 'string' ? pr.head_branch : null,
+                    commits:              toInt(pr.commits),
+                    additions:            toInt(pr.additions),
+                    deletions:            toInt(pr.deletions),
+                    comments:             toInt(pr.comments),
+                  });
+                }
+                if (toUpsert.length > 0) {
+                  const { error } = await supabase.from('pull_requests')
+                    .upsert(toUpsert, { onConflict: 'id', ignoreDuplicates: true });
+                  if (error) log.error('PR upsert error', { repo_id: repoId, error: error.message });
+                  else totalPRs += toUpsert.length;
+                }
+              }
+
+              // Source 2: deployments[].related_prs[] — no id, insert by pr_no
+              // (same PR objects; skip if already inserted via pull_requests[])
               const deployments = Array.isArray(repoData.deployments) ? repoData.deployments : [];
               for (const dep of deployments) {
                 const prs = Array.isArray(dep.related_prs) ? dep.related_prs : [];
@@ -223,10 +258,8 @@ jobs:
                   const prNo = typeof no === 'number' ? no : parseInt(String(no), 10);
                   if (isNaN(prNo) || seenPrNo.has(prNo)) continue;
                   seenPrNo.add(prNo);
-
-                  // id is auto-generated by the DB — do NOT include it
                   const { error } = await supabase.from('pull_requests').insert({
-                    repo_id:              repo.id,
+                    repo_id:              repoId,
                     fetch_data_id:        fetchDataId,
                     pr_no:                prNo,
                     title:                pr.title ?? null,
@@ -244,13 +277,13 @@ jobs:
                     comments:             toInt(pr.comments),
                   });
                   if (!error) totalPRs++;
-                  else log.error('PR insert error', { repo_id: repo.id, provider, pr_no: prNo, error: error.message });
+                  else if (!error.message.includes('duplicate'))
+                    log.error('PR insert error', { repo_id: repoId, pr_no: prNo, error: error.message });
                 }
               }
             }
 
             // ── Workflow Runs ─────────────────────────────────────────────────
-            // repos[].workflow_runs[] plus optional top-level data.workflow_runs[]
             const workflowRunsRaw = [];
             for (const repoData of repos) {
               if (repoData.error) continue;
@@ -264,12 +297,9 @@ jobs:
               const rawIdStr = String(rawId);
               const isUUID   = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawIdStr);
               const uuidId   = isUUID ? rawIdStr : generateDeterministicUUID('workflow_run', rawIdStr);
-
-              // workflow_runs columns: id, repo_id, fetch_data_id, run_id, name,
-              // head_branch, status, conclusion, created_at, updated_at, html_url, actor, workflow_id
               const { error } = await supabase.from('workflow_runs').upsert({
                 id:            uuidId,
-                repo_id:       repo.id,
+                repo_id:       repoId,
                 fetch_data_id: fetchDataId,
                 run_id:        rawIdStr,
                 name:          wr.name ?? wr.workflow_name ?? null,
@@ -283,49 +313,110 @@ jobs:
                 workflow_id:   wr.workflow_id?.toString() ?? null,
               }, { onConflict: 'id', ignoreDuplicates: false });
               if (!error) totalWorkflowRuns++;
-              else log.error('Workflow run upsert error', { repo_id: repo.id, provider, run_id: rawIdStr, error: error.message });
+              else log.error('Workflow run upsert error', { repo_id: repoId, run_id: rawIdStr, error: error.message });
             }
 
-            // ── Incidents (derived from workflow_run failures) ─────────────────
-            // A failed run = incident creation; next success run = resolved date.
-            const runsWithMeta = [];
-            for (const wr of workflowRunsRaw) {
-              const rawId  = wr.id ?? wr.run_id;
-              const created = toTs(wr.created_at);
-              if (rawId == null || created == null) continue;
-              const id = typeof rawId === 'number' ? rawId : parseInt(String(rawId), 10);
-              if (isNaN(id)) continue;
-              runsWithMeta.push({ runId: id, created_at: created, conclusion: typeof wr.conclusion === 'string' ? wr.conclusion : null });
-            }
-            runsWithMeta.sort((a, b) => a.created_at.localeCompare(b.created_at));
-
-            for (let i = 0; i < runsWithMeta.length; i++) {
-              const run = runsWithMeta[i];
-              if ((run.conclusion ?? '').toLowerCase() !== 'failure') continue;
-              let resolvedDate = null;
-              for (let j = i + 1; j < runsWithMeta.length; j++) {
-                if ((runsWithMeta[j].conclusion ?? '').toLowerCase() === 'success') {
-                  resolvedDate = runsWithMeta[j].created_at;
-                  break;
+            // ── Incidents ─────────────────────────────────────────────────────
+            // Primary: repos[].incidents[] (Lambda provides real incidents).
+            const seenIncidentId = new Set();
+            for (const repoData of repos) {
+              if (repoData.error) continue;
+              if (!Array.isArray(repoData.incidents)) continue;
+              for (const inc of repoData.incidents) {
+                const isValidUUID = v => v && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(v));
+                let incId = isValidUUID(inc.id) ? inc.id : null;
+                if (!incId) {
+                  if (!inc.key) continue;
+                  incId = generateDeterministicUUID('incident', inc.key);
                 }
+                if (seenIncidentId.has(incId)) continue;
+                seenIncidentId.add(incId);
+                let workflowRunId = null;
+                if (typeof inc.key === 'string' && inc.key.startsWith('workflow-')) {
+                  const n = inc.key.replace('workflow-', '');
+                  if (n && !isNaN(n)) workflowRunId = parseInt(n, 10);
+                }
+                const { error } = await supabase.from('incidents').upsert({
+                  id:              incId,
+                  repo_id:         repoId,
+                  fetch_data_id:   fetchDataId,
+                  pull_request_id: isValidUUID(inc.pull_request_id) ? inc.pull_request_id : null,
+                  workflow_run_id: workflowRunId,
+                  pr_no:           inc.incident_number?.toString() ?? null,
+                  creation_date:   toTs(inc.creation_date),
+                  resolved_date:   toTs(inc.resolved_date),
+                  created_at:      toTs(inc.creation_date),
+                }, { onConflict: 'id', ignoreDuplicates: false });
+                if (!error) totalIncidents++;
+                else log.error('Incident upsert error', { repo_id: repoId, error: error.message });
               }
-              // incidents columns: id, repo_id, fetch_data_id, pull_request_id,
-              // workflow_run_id, created_at, pr_no, creation_date, resolved_date
-              const { error } = await supabase.from('incidents').insert({
-                repo_id:         repo.id,
-                fetch_data_id:   fetchDataId,
-                pull_request_id: null,
-                workflow_run_id: run.runId,
-                pr_no:           null,
-                creation_date:   run.created_at,
-                resolved_date:   resolvedDate,
-                created_at:      run.created_at,
-              });
-              if (!error) totalIncidents++;
-              else log.error('Incident insert error', { repo_id: repo.id, provider, error: error.message });
             }
 
-            // 2. Update repos.last_fetched_at
+            // Fallback: derive synthetic incidents from workflow_run failures when
+            // Lambda incidents are empty (mirrors parse-fetch-response.ts logic).
+            if (totalIncidents === 0 && workflowRunsRaw.length > 0) {
+              const runsWithMeta = [];
+              for (const wr of workflowRunsRaw) {
+                const rawId  = wr.id ?? wr.run_id;
+                const created = toTs(wr.created_at);
+                if (rawId == null || created == null) continue;
+                const id = typeof rawId === 'number' ? rawId : parseInt(String(rawId), 10);
+                if (isNaN(id)) continue;
+                runsWithMeta.push({ runId: id, created_at: created, conclusion: typeof wr.conclusion === 'string' ? wr.conclusion : null });
+              }
+              runsWithMeta.sort((a, b) => a.created_at.localeCompare(b.created_at));
+              for (let i = 0; i < runsWithMeta.length; i++) {
+                const run = runsWithMeta[i];
+                if ((run.conclusion ?? '').toLowerCase() !== 'failure') continue;
+                let resolvedDate = null;
+                for (let j = i + 1; j < runsWithMeta.length; j++) {
+                  if ((runsWithMeta[j].conclusion ?? '').toLowerCase() === 'success') {
+                    resolvedDate = runsWithMeta[j].created_at;
+                    break;
+                  }
+                }
+                const { error } = await supabase.from('incidents').insert({
+                  repo_id:         repoId,
+                  fetch_data_id:   fetchDataId,
+                  pull_request_id: null,
+                  workflow_run_id: run.runId,
+                  pr_no:           null,
+                  creation_date:   run.created_at,
+                  resolved_date:   resolvedDate,
+                  created_at:      run.created_at,
+                });
+                if (!error) totalIncidents++;
+                else if (!error.message.includes('duplicate'))
+                  log.error('Synthetic incident insert error', { repo_id: repoId, error: error.message });
+              }
+            }
+
+            return { totalPRs, totalIncidents, totalWorkflowRuns };
+          }
+
+          // ── Helper: persist Lambda response body to Supabase ────────────────
+          async function persistRepoData(repo, responseBody, fetchedAt) {
+            const provider = detectProvider(repo);
+
+            // 1. Insert fetch_data record (stores raw_response for audit/reparse)
+            const { data: fetchRecord, error: fetchErr } = await supabase
+              .from('fetch_data')
+              .insert({ repo_id: repo.id, fetched_at: fetchedAt, state: 'success', raw_response: responseBody })
+              .select('id')
+              .single();
+
+            if (fetchErr) {
+              log.error('Failed to create fetch_data record', { repo_id: repo.id, provider, error: fetchErr.message });
+              return { success: false };
+            }
+
+            const fetchDataId = fetchRecord.id;
+
+            // 2. Parse raw_response → pull_requests, workflow_runs, incidents
+            const { totalPRs, totalIncidents, totalWorkflowRuns } =
+              await parseAndStoreResponse(repo.id, fetchDataId, responseBody);
+
+            // 3. Update repos.last_fetched_at
             const { error: repoUpdateErr } = await supabase
               .from('repos')
               .update({ last_fetched_at: fetchedAt })
