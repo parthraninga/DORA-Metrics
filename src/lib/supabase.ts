@@ -7,6 +7,7 @@ export interface TokenRow {
   name: string;
   token: string;
   type: TokenType;
+  email?: string | null;
   created_at?: string;
 }
 
