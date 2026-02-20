@@ -168,36 +168,27 @@ jobs:
           }
 
           // ── Helper: map PR from Lambda response to DB schema ──────────────────
+          // Only includes columns that exist in the pull_requests table.
           function mapPullRequest(pr, repoId, fetchDataId) {
             if (!pr.id) return null;
             return {
-              id:                    pr.id,
-              repo_id:               repoId,
-              fetch_data_id:         fetchDataId,
-              pr_no:                 pr.number?.toString() ?? pr.pr_no?.toString(),
-              title:                 pr.title,
-              author:                typeof pr.author === 'object' ? pr.author?.username : pr.author,
-              first_commit_to_open:  pr.first_commit_to_open,
-              cycle_time:            pr.cycle_time,
-              created_at:            pr.created_at,
-              updated_at:            pr.updated_at,
-              state:                 pr.state,
-              base_branch:           pr.base_branch,
-              head_branch:           pr.head_branch,
-              commits:               pr.commits,
-              additions:             pr.additions,
-              deletions:             pr.deletions,
-              comments:              pr.comments,
-              url:                   pr.url,
-              state_changed_at:      pr.state_changed_at,
-              provider:              pr.provider,
-              reviewers:             pr.reviewers ? JSON.stringify(pr.reviewers) : null,
-              lead_time:             pr.lead_time,
-              merge_time:            pr.merge_time,
-              deploy_time:           pr.deploy_time,
-              first_response_time:   pr.first_response_time,
-              rework_time:           pr.rework_time,
-              merge_to_deploy:       pr.merge_to_deploy,
+              id:                   pr.id,
+              repo_id:              repoId,
+              fetch_data_id:        fetchDataId,
+              pr_no:                pr.number?.toString() ?? pr.pr_no?.toString(),
+              title:                pr.title,
+              author:               typeof pr.author === 'object' ? pr.author?.username : pr.author,
+              first_commit_to_open: pr.first_commit_to_open,
+              cycle_time:           pr.cycle_time,
+              created_at:           pr.created_at,
+              updated_at:           pr.updated_at,
+              state:                pr.state,
+              base_branch:          pr.base_branch,
+              head_branch:          pr.head_branch,
+              commits:              pr.commits,
+              additions:            pr.additions,
+              deletions:            pr.deletions,
+              comments:             pr.comments,
             };
           }
 
