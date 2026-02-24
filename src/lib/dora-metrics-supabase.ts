@@ -19,7 +19,12 @@ export type SupabaseDeploymentFrequencyResult = {
 };
 
 export type SupabaseChangeFailureRateResult = {
-  change_failure_rate: number;
+  /**
+   * Percentage in [0, 100], or null when there are no deployments in the window.
+   * Guaranteed never to exceed 100 because failed_deployments is derived solely
+   * from the same filtered workflow_runs set used for total_deployments.
+   */
+  change_failure_rate: number | null;
   failed_deployments: number;
   total_deployments: number;
 };
@@ -360,6 +365,23 @@ export async function getDeploymentFrequencyTrendsFromSupabase(
  * An incident = a run with conclusion = 'failure' followed by conclusion = 'success' (resolved).
  * If branchFilter is provided, only workflow runs with head_branch matching the repo's prod/stage/dev branch are counted.
  */
+/**
+ * Change Failure Rate: the percentage of deployments in the window that caused a failure.
+ *
+ * Deployment source of truth: workflow_runs table, windowed by created_at.
+ * Branch filtering is applied once to the fetched run set and reused for both
+ * total_deployments and failure detection — guaranteeing CFR is in [0, 100].
+ *
+ * A run counts as a FAILED deployment when either:
+ *   (a) workflow_runs.conclusion === 'failure'  (direct pipeline failure), OR
+ *   (b) its run_id appears in incidents.workflow_run_id  (hotfix, revert, incident-linked).
+ *
+ * Incidents are never counted independently. Duplicate incident rows referencing
+ * the same run_id are collapsed by a Set, so one run = at most one failed deployment.
+ * Incidents referencing run_ids outside the filtered window are ignored.
+ *
+ * Returns null (not 0) when there are no deployments in the window.
+ */
 export async function getChangeFailureRateFromSupabase(
   supabase: SupabaseClient,
   teamId: string,
@@ -369,76 +391,71 @@ export async function getChangeFailureRateFromSupabase(
 ): Promise<SupabaseChangeFailureRateResult> {
   const repoIds = await getTeamRepoIds(supabase, teamId);
   if (repoIds.length === 0) {
-    return {
-      change_failure_rate: 0,
-      failed_deployments: 0,
-      total_deployments: 0,
-    };
+    return { change_failure_rate: null, failed_deployments: 0, total_deployments: 0 };
   }
 
   const fromStr = fromDate.toISOString();
   const toStr = toDate.toISOString();
 
-  // Fetch workflow runs with head_branch to filter by production branch
-  const selectFields = branchFilter ? 'repo_id, head_branch' : '*';
-  const [incidentsRes, workflowRunsRes] = await Promise.all([
-    supabase
-      .from('incidents')
-      .select(branchFilter ? 'id, repo_id, workflow_run_id' : '*', { count: branchFilter ? undefined : 'exact', head: !branchFilter })
-      .in('repo_id', repoIds)
-      .not('creation_date', 'is', null)
-      .gte('creation_date', fromStr)
-      .lte('creation_date', toStr),
-    supabase
-      .from('workflow_runs')
-      .select(selectFields, { count: branchFilter ? undefined : 'exact', head: !branchFilter })
-      .in('repo_id', repoIds)
-      .gte('created_at', fromStr)
-      .lte('created_at', toStr),
-  ]);
+  // ── Step A: fetch all workflow runs in the window ─────────────────────────
+  const { data: runData } = await supabase
+    .from('workflow_runs')
+    .select('run_id, repo_id, head_branch, conclusion')
+    .in('repo_id', repoIds)
+    .gte('created_at', fromStr)
+    .lte('created_at', toStr);
 
-  let failed_deployments = 0;
-  let total_deployments = 0;
-
+  // ── Step B: apply branch filter once to get the canonical deployment set ──
+  let deploymentRuns = (runData || []) as {
+    run_id: string | number;
+    repo_id: string;
+    head_branch?: string | null;
+    conclusion?: string | null;
+  }[];
   if (branchFilter) {
-    // Filter workflow runs by head_branch matching production branch
-    let workflowRuns = (workflowRunsRes.data || []) as { repo_id: string; head_branch?: string | null }[];
-    workflowRuns = filterWorkflowRunsByBranchMode(workflowRuns, branchFilter.branchMode, branchFilter.repoBranchMap);
-    total_deployments = workflowRuns.length;
-
-    // For incidents, we need to map workflow_run_id to check if it's from production branch
-    // Fetch the workflow runs for incidents to check their head_branch
-    const incidentRows = (incidentsRes.data || []) as { id: string; repo_id: string; workflow_run_id: number }[];
-    if (incidentRows.length > 0) {
-      const incidentRunIds = incidentRows.map(i => i.workflow_run_id);
-      const { data: incidentWorkflowRuns } = await supabase
-        .from('workflow_runs')
-        .select('run_id, repo_id, head_branch')
-        .in('repo_id', repoIds)
-        .in('run_id', incidentRunIds);
-      
-      const filteredIncidentRuns = filterWorkflowRunsByBranchMode(
-        (incidentWorkflowRuns || []) as { repo_id: string; head_branch?: string | null }[],
-        branchFilter.branchMode,
-        branchFilter.repoBranchMap
-      );
-      failed_deployments = filteredIncidentRuns.length;
-    }
-  } else {
-    failed_deployments = incidentsRes.count ?? 0;
-    total_deployments = workflowRunsRes.count ?? 0;
+    deploymentRuns = filterWorkflowRunsByBranchMode(
+      deploymentRuns,
+      branchFilter.branchMode,
+      branchFilter.repoBranchMap
+    );
   }
 
-  const change_failure_rate =
-    total_deployments > 0
-      ? Math.round((failed_deployments / total_deployments) * 10000) / 100
-      : 0;
+  // ── Step C ────────────────────────────────────────────────────────────────
+  const total_deployments = deploymentRuns.length;
+  if (total_deployments === 0) {
+    return { change_failure_rate: null, failed_deployments: 0, total_deployments: 0 };
+  }
 
-  return {
-    change_failure_rate,
-    failed_deployments,
-    total_deployments,
-  };
+  // ── Step D: seed failed set from runs with conclusion = 'failure' ─────────
+  const failedRunIds = new Set<string | number>();
+  for (const run of deploymentRuns) {
+    if ((run.conclusion ?? '').toLowerCase() === 'failure') {
+      failedRunIds.add(run.run_id);
+    }
+  }
+
+  // ── Step E: query incidents scoped to this run set only ───────────────────
+  // No time filter on incidents — the window is already enforced by the run set.
+  const allRunIds = deploymentRuns.map((r) => r.run_id);
+  const { data: incidentData } = await supabase
+    .from('incidents')
+    .select('workflow_run_id')
+    .in('repo_id', repoIds)
+    .in('workflow_run_id', allRunIds);
+
+  // ── Step F: union incident-linked run_ids into the failed set ─────────────
+  for (const inc of incidentData || []) {
+    if (inc.workflow_run_id != null) {
+      failedRunIds.add(inc.workflow_run_id);
+    }
+  }
+
+  // ── Step G/H: compute CFR ─────────────────────────────────────────────────
+  const failed_deployments = failedRunIds.size;
+  const change_failure_rate =
+    Math.round((failed_deployments / total_deployments) * 10000) / 100;
+
+  return { change_failure_rate, failed_deployments, total_deployments };
 }
 
 /** Change failure rate trends: date string -> { change_failure_rate, failed_deployments, total_deployments }. */
@@ -448,8 +465,17 @@ export type ChangeFailureRateTrendsMap = Record<
 >;
 
 /**
- * Per-day CFR: for each day, count incidents by creation_date and workflow_runs by created_at, then rate.
- * If branchFilter is provided, only workflow runs with head_branch matching the repo's prod/stage/dev branch are counted.
+ * Per-day Change Failure Rate trends.
+ *
+ * Uses the same single-source-of-truth model as getChangeFailureRateFromSupabase:
+ *   - workflow_runs (windowed by created_at) are the canonical deployment set.
+ *   - Branch filter is applied once; the filtered set drives both totals and failures.
+ *   - A run is failed if conclusion === 'failure' OR its run_id is in incidents.
+ *   - Per-day failure counts use a Set<run_id> so duplicate incident rows collapse to 1.
+ *   - Incidents without a matching run_id in the filtered set are ignored.
+ *   - Days with no workflow runs are omitted from the result map.
+ *   - change_failure_rate is null (not 0) for days that have no deployments at all,
+ *     but such days are not emitted anyway since they have total_deployments = 0.
  */
 export async function getChangeFailureRateTrendsFromSupabase(
   supabase: SupabaseClient,
@@ -464,78 +490,74 @@ export async function getChangeFailureRateTrendsFromSupabase(
   const fromStr = fromDate.toISOString();
   const toStr = toDate.toISOString();
 
-  const workflowSelectFields = branchFilter ? 'created_at, repo_id, head_branch' : 'created_at';
-  const incidentSelectFields = branchFilter ? 'creation_date, repo_id, workflow_run_id' : 'creation_date';
-  
-  const [incidentsRows, workflowRunsRows] = await Promise.all([
-    supabase
-      .from('incidents')
-      .select(incidentSelectFields)
-      .in('repo_id', repoIds)
-      .not('creation_date', 'is', null)
-      .gte('creation_date', fromStr)
-      .lte('creation_date', toStr),
-    supabase
-      .from('workflow_runs')
-      .select(workflowSelectFields)
-      .in('repo_id', repoIds)
-      .gte('created_at', fromStr)
-      .lte('created_at', toStr),
-  ]);
+  // ── Step A: fetch all workflow runs in the window ─────────────────────────
+  const { data: runData } = await supabase
+    .from('workflow_runs')
+    .select('run_id, repo_id, head_branch, conclusion, created_at')
+    .in('repo_id', repoIds)
+    .gte('created_at', fromStr)
+    .lte('created_at', toStr);
 
-  const byDate: Record<
-    string,
-    { failed: number; total: number }
-  > = {};
-
-  // Filter workflow runs by branch if filter provided
-  let filteredWorkflowRuns = (workflowRunsRows.data || []) as { created_at?: string | null; repo_id?: string; head_branch?: string | null }[];
+  // ── Step B: apply branch filter once ─────────────────────────────────────
+  let deploymentRuns = (runData || []) as {
+    run_id: string | number;
+    repo_id: string;
+    head_branch?: string | null;
+    conclusion?: string | null;
+    created_at?: string | null;
+  }[];
   if (branchFilter) {
-    filteredWorkflowRuns = filterWorkflowRunsByBranchMode(filteredWorkflowRuns, branchFilter.branchMode, branchFilter.repoBranchMap);
+    deploymentRuns = filterWorkflowRunsByBranchMode(
+      deploymentRuns,
+      branchFilter.branchMode,
+      branchFilter.repoBranchMap
+    );
   }
 
-  for (const r of filteredWorkflowRuns) {
-    const dateStr = r.created_at ? format(parseISO(r.created_at), 'yyyy-MM-dd') : '';
+  if (deploymentRuns.length === 0) return {};
+
+  // ── Step C/D: bucket totals and seed per-day failure sets ─────────────────
+  // runIdToDate maps each run_id → 'yyyy-MM-dd' for incident look-up below.
+  const byDate: Record<string, { total: number; failedSet: Set<string | number> }> = {};
+  const runIdToDate = new Map<string | number, string>();
+
+  for (const run of deploymentRuns) {
+    const dateStr = run.created_at ? format(parseISO(run.created_at), 'yyyy-MM-dd') : '';
     if (!dateStr) continue;
-    if (!byDate[dateStr]) byDate[dateStr] = { failed: 0, total: 0 };
+    runIdToDate.set(run.run_id, dateStr);
+    if (!byDate[dateStr]) byDate[dateStr] = { total: 0, failedSet: new Set() };
     byDate[dateStr].total += 1;
-  }
-
-  // Filter incidents by workflow runs on production branch
-  let incidentRowsFiltered = (incidentsRows.data || []) as { creation_date?: string | null; repo_id?: string; workflow_run_id?: number }[];
-  if (branchFilter && incidentRowsFiltered.length > 0) {
-    // Fetch workflow runs for these incidents to check their head_branch
-    const incidentRunIds = incidentRowsFiltered.map(i => i.workflow_run_id).filter(Boolean) as number[];
-    if (incidentRunIds.length > 0) {
-      const { data: incidentWorkflowRuns } = await supabase
-        .from('workflow_runs')
-        .select('run_id, repo_id, head_branch')
-        .in('repo_id', repoIds)
-        .in('run_id', incidentRunIds);
-      
-      const filteredRuns = filterWorkflowRunsByBranchMode(
-        (incidentWorkflowRuns || []) as { run_id?: number; repo_id: string; head_branch?: string | null }[],
-        branchFilter.branchMode,
-        branchFilter.repoBranchMap
-      );
-      const allowedRunIds = new Set(filteredRuns.map((r: any) => r.run_id));
-      incidentRowsFiltered = incidentRowsFiltered.filter(i => i.workflow_run_id && allowedRunIds.has(i.workflow_run_id));
+    if ((run.conclusion ?? '').toLowerCase() === 'failure') {
+      byDate[dateStr].failedSet.add(run.run_id);
     }
   }
 
-  for (const r of incidentRowsFiltered) {
-    const dateStr = r.creation_date ? format(parseISO(r.creation_date), 'yyyy-MM-dd') : '';
-    if (!dateStr) continue;
-    if (!byDate[dateStr]) byDate[dateStr] = { failed: 0, total: 0 };
-    byDate[dateStr].failed += 1;
+  // ── Step E: query incidents scoped to this run set only ───────────────────
+  // No time filter on incidents — the window is enforced by the run set.
+  const allRunIds = deploymentRuns.map((r) => r.run_id);
+  const { data: incidentData } = await supabase
+    .from('incidents')
+    .select('workflow_run_id')
+    .in('repo_id', repoIds)
+    .in('workflow_run_id', allRunIds);
+
+  // ── Step F: union incident-linked run_ids into the per-day failure sets ───
+  for (const inc of incidentData || []) {
+    if (inc.workflow_run_id == null) continue;
+    const dateStr = runIdToDate.get(inc.workflow_run_id);
+    // Ignore incidents whose run_id is not in the filtered set (Step B)
+    if (!dateStr || !byDate[dateStr]) continue;
+    byDate[dateStr].failedSet.add(inc.workflow_run_id);
   }
 
+  // ── Step G/H: build output map ────────────────────────────────────────────
   const out: ChangeFailureRateTrendsMap = {};
   for (const [dateStr, agg] of Object.entries(byDate)) {
     const total = agg.total;
-    const failed = agg.failed;
+    const failed = agg.failedSet.size;
     out[dateStr] = {
-      change_failure_rate: total > 0 ? (failed / total) * 100 : 0,
+      change_failure_rate:
+        total > 0 ? Math.round((failed / total) * 10000) / 100 : null,
       failed_deployments: failed,
       total_deployments: total,
     };
