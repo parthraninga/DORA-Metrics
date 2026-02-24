@@ -171,6 +171,43 @@ export type BranchFilterOptions = {
 };
 
 /**
+ * Returns true when a workflow run itself signals a production failure,
+ * independent of whether it is also linked to an incidents row.
+ *
+ * Failure signals:
+ *   1. conclusion === 'failure'           — pipeline broke
+ *   2. head_branch matches hotfix/*       — hotfix deployment
+ *   3. head_branch matches revert/*       — branch-level revert
+ *   4. head_branch matches rollback/*     — explicit rollback branch
+ *   5. workflow name contains rollback    — rollback workflow
+ *   6. workflow name contains revert      — revert workflow
+ *   7. workflow name contains hotfix      — hotfix workflow
+ *
+ * All keyword checks are case-insensitive.
+ */
+function isFailureSignal(run: {
+  conclusion?: string | null;
+  head_branch?: string | null;
+  name?: string | null;
+}): boolean {
+  const conclusion  = (run.conclusion  ?? '').toLowerCase();
+  const branch      = (run.head_branch ?? '').toLowerCase();
+  const workflowName = (run.name       ?? '').toLowerCase();
+
+  if (conclusion === 'failure') return true;
+
+  // Branch-name conventions used by teams to signal remediation deployments
+  const BRANCH_PREFIXES = ['hotfix/', 'hotfix-', 'revert/', 'revert-', 'rollback/', 'rollback-'];
+  if (BRANCH_PREFIXES.some((p) => branch.startsWith(p))) return true;
+
+  // Workflow names that explicitly represent rollback / revert / hotfix flows
+  const NAME_KEYWORDS = ['rollback', 'revert', 'hotfix'];
+  if (NAME_KEYWORDS.some((kw) => workflowName.includes(kw))) return true;
+
+  return false;
+}
+
+/**
  * Lead Time = mean of (first_commit_to_open + cycle_time) for pull_requests
  * where state = 'MERGED' and updated_at in [fromDate, toDate], repo_id in team's repos.
  * If branchFilter is provided, only PRs with base_branch matching the repo's prod/stage/dev branch are included.
@@ -372,9 +409,13 @@ export async function getDeploymentFrequencyTrendsFromSupabase(
  * Branch filtering is applied once to the fetched run set and reused for both
  * total_deployments and failure detection — guaranteeing CFR is in [0, 100].
  *
- * A run counts as a FAILED deployment when either:
- *   (a) workflow_runs.conclusion === 'failure'  (direct pipeline failure), OR
- *   (b) its run_id appears in incidents.workflow_run_id  (hotfix, revert, incident-linked).
+ * A run counts as a FAILED deployment when ANY of the following is true:
+ *   (a) conclusion === 'failure'                 — pipeline broke
+ *   (b) head_branch starts with hotfix/|hotfix-  — hotfix deployment
+ *   (c) head_branch starts with revert/|revert-  — branch-level revert
+ *   (d) head_branch starts with rollback/|rollback- — rollback branch
+ *   (e) workflow name contains rollback/revert/hotfix
+ *   (f) run_id appears in incidents.workflow_run_id — incident-linked
  *
  * Incidents are never counted independently. Duplicate incident rows referencing
  * the same run_id are collapsed by a Set, so one run = at most one failed deployment.
@@ -398,9 +439,10 @@ export async function getChangeFailureRateFromSupabase(
   const toStr = toDate.toISOString();
 
   // ── Step A: fetch all workflow runs in the window ─────────────────────────
+  // Include `name` so isFailureSignal can check workflow names for hotfix/rollback/revert.
   const { data: runData } = await supabase
     .from('workflow_runs')
-    .select('run_id, repo_id, head_branch, conclusion')
+    .select('run_id, repo_id, head_branch, conclusion, name')
     .in('repo_id', repoIds)
     .gte('created_at', fromStr)
     .lte('created_at', toStr);
@@ -411,6 +453,7 @@ export async function getChangeFailureRateFromSupabase(
     repo_id: string;
     head_branch?: string | null;
     conclusion?: string | null;
+    name?: string | null;
   }[];
   if (branchFilter) {
     deploymentRuns = filterWorkflowRunsByBranchMode(
@@ -426,10 +469,10 @@ export async function getChangeFailureRateFromSupabase(
     return { change_failure_rate: null, failed_deployments: 0, total_deployments: 0 };
   }
 
-  // ── Step D: seed failed set from runs with conclusion = 'failure' ─────────
+  // ── Step D: seed failed set — conclusion, hotfix, revert, rollback signals ─
   const failedRunIds = new Set<string | number>();
   for (const run of deploymentRuns) {
-    if ((run.conclusion ?? '').toLowerCase() === 'failure') {
+    if (isFailureSignal(run)) {
       failedRunIds.add(run.run_id);
     }
   }
@@ -470,7 +513,8 @@ export type ChangeFailureRateTrendsMap = Record<
  * Uses the same single-source-of-truth model as getChangeFailureRateFromSupabase:
  *   - workflow_runs (windowed by created_at) are the canonical deployment set.
  *   - Branch filter is applied once; the filtered set drives both totals and failures.
- *   - A run is failed if conclusion === 'failure' OR its run_id is in incidents.
+ *   - A run is failed if isFailureSignal() is true (conclusion=failure, hotfix/revert/rollback
+ *     branch or workflow name) OR its run_id is in incidents.
  *   - Per-day failure counts use a Set<run_id> so duplicate incident rows collapse to 1.
  *   - Incidents without a matching run_id in the filtered set are ignored.
  *   - Days with no workflow runs are omitted from the result map.
@@ -491,9 +535,10 @@ export async function getChangeFailureRateTrendsFromSupabase(
   const toStr = toDate.toISOString();
 
   // ── Step A: fetch all workflow runs in the window ─────────────────────────
+  // Include `name` so isFailureSignal can check workflow names for hotfix/rollback/revert.
   const { data: runData } = await supabase
     .from('workflow_runs')
-    .select('run_id, repo_id, head_branch, conclusion, created_at')
+    .select('run_id, repo_id, head_branch, conclusion, created_at, name')
     .in('repo_id', repoIds)
     .gte('created_at', fromStr)
     .lte('created_at', toStr);
@@ -505,6 +550,7 @@ export async function getChangeFailureRateTrendsFromSupabase(
     head_branch?: string | null;
     conclusion?: string | null;
     created_at?: string | null;
+    name?: string | null;
   }[];
   if (branchFilter) {
     deploymentRuns = filterWorkflowRunsByBranchMode(
@@ -527,7 +573,7 @@ export async function getChangeFailureRateTrendsFromSupabase(
     runIdToDate.set(run.run_id, dateStr);
     if (!byDate[dateStr]) byDate[dateStr] = { total: 0, failedSet: new Set() };
     byDate[dateStr].total += 1;
-    if ((run.conclusion ?? '').toLowerCase() === 'failure') {
+    if (isFailureSignal(run)) {
       byDate[dateStr].failedSet.add(run.run_id);
     }
   }
