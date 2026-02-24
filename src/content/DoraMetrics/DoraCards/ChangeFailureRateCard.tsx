@@ -82,8 +82,8 @@ export const ChangeFailureRateCard = () => {
 
   const totalFailureIncidents = useSelector(
     (s) =>
-      s.doraMetrics.metrics_summary?.mean_time_to_restore_stats.current
-        .incident_count
+      s.doraMetrics.metrics_summary?.change_failure_rate_stats.current
+        .failed_deployments
   );
 
   const changeFailureRateCount = useCountUp(changeFailureRateProps.count || 0);
