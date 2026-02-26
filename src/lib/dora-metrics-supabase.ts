@@ -151,7 +151,11 @@ function filterRowsByBranchMode<T extends { repo_id: string; base_branch?: strin
 
 /**
  * Filter workflow runs by head_branch matching the repo's prod/stage/dev branch.
- * Used for CFR/MTTR to only count workflow runs from the production/stage/dev branch.
+ * Used for CFR/MTTR to only count relevant workflow runs.
+ *
+ * DORA rule: remediation branches (hotfix/*, revert/*, rollback/*) are ALWAYS
+ * included regardless of branch filter, because they represent a failure caused
+ * by a prior production deployment — stripping them would hide real CFR events.
  */
 function filterWorkflowRunsByBranchMode<T extends { repo_id: string; head_branch?: string | null }>(
   rows: T[],
@@ -159,7 +163,12 @@ function filterWorkflowRunsByBranchMode<T extends { repo_id: string; head_branch
   repoBranchMap: RepoBranchMap
 ): T[] {
   const key = branchMode === 'PROD' ? 'prod_branch' : branchMode === 'STAGE' ? 'stage_branch' : 'dev_branch';
+  const REMEDIATION_PREFIXES = ['hotfix/', 'hotfix-', 'revert/', 'revert-', 'rollback/', 'rollback-'];
   return rows.filter((row) => {
+    const branch = (row.head_branch ?? '').toLowerCase();
+    // Always include remediation branches — they are CFR signals for any prod branch
+    if (REMEDIATION_PREFIXES.some((p) => branch.startsWith(p))) return true;
+    // Otherwise apply normal branch filter
     const allowed = repoBranchMap[row.repo_id]?.[key];
     return allowed != null && allowed !== '' && (row.head_branch ?? '') === allowed;
   });
@@ -183,6 +192,14 @@ export type BranchFilterOptions = {
  *   6. workflow name contains revert      — revert workflow
  *   7. workflow name contains hotfix      — hotfix workflow
  *
+ * A workflow run counts as a CFR failure when ANY of the following is true:
+ *   1. conclusion === 'failure'              — the pipeline/deployment broke
+ *   2. head_branch starts with hotfix/*      — emergency fix for a prior release
+ *   3. head_branch starts with revert/*      — branch-level revert of a prior release
+ *   4. head_branch starts with rollback/*    — rollback of a prior release
+ *   5. workflow name contains hotfix/revert/rollback
+ *   6. run_id appears in incidents table     — direct incident linkage (Step E/F)
+ *
  * All keyword checks are case-insensitive.
  */
 function isFailureSignal(run: {
@@ -190,13 +207,14 @@ function isFailureSignal(run: {
   head_branch?: string | null;
   name?: string | null;
 }): boolean {
-  const conclusion  = (run.conclusion  ?? '').toLowerCase();
-  const branch      = (run.head_branch ?? '').toLowerCase();
-  const workflowName = (run.name       ?? '').toLowerCase();
+  const conclusion   = (run.conclusion  ?? '').toLowerCase();
+  const branch       = (run.head_branch ?? '').toLowerCase();
+  const workflowName = (run.name        ?? '').toLowerCase();
 
+  // A failed pipeline deployment is a change failure — something broke
   if (conclusion === 'failure') return true;
 
-  // Branch-name conventions used by teams to signal remediation deployments
+  // Branch-name conventions that signal a remediation deployment
   const BRANCH_PREFIXES = ['hotfix/', 'hotfix-', 'revert/', 'revert-', 'rollback/', 'rollback-'];
   if (BRANCH_PREFIXES.some((p) => branch.startsWith(p))) return true;
 
@@ -205,6 +223,23 @@ function isFailureSignal(run: {
   if (NAME_KEYWORDS.some((kw) => workflowName.includes(kw))) return true;
 
   return false;
+}
+
+/**
+ * Deduplicate pull_request rows by (repo_id, pr_no).
+ * The pull_requests table can contain two rows per PR due to dual ingestion paths
+ * (Source 1: upsert with UUID id; Source 2: plain insert that gets a new UUID auto-generated
+ * by the DB). Keeping only the first occurrence per composite key prevents double-counting
+ * in every metric that aggregates merged PRs.
+ */
+function deduplicateByRepoPrNo<T extends { repo_id?: string | null; pr_no?: number | string | null }>(rows: T[]): T[] {
+  const seen = new Set<string>();
+  return rows.filter((r) => {
+    const key = `${r.repo_id ?? ''}:${r.pr_no ?? ''}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 /**
@@ -236,8 +271,8 @@ export async function getLeadTimeFromSupabase(
   const toStr = toDate.toISOString();
 
   const selectFields = branchFilter
-    ? 'first_commit_to_open, cycle_time, repo_id, base_branch'
-    : 'first_commit_to_open, cycle_time';
+    ? 'pr_no, repo_id, first_commit_to_open, cycle_time, base_branch'
+    : 'pr_no, repo_id, first_commit_to_open, cycle_time';
   const { data: rawRows, error } = await supabase
     .from('pull_requests')
     .select(selectFields)
@@ -246,7 +281,7 @@ export async function getLeadTimeFromSupabase(
     .gte('updated_at', fromStr)
     .lte('updated_at', toStr);
 
-  let rows = (rawRows || []) as { first_commit_to_open?: number | null; cycle_time?: number | null; repo_id?: string; base_branch?: string | null }[];
+  let rows = deduplicateByRepoPrNo((rawRows || []) as { pr_no?: number | string | null; first_commit_to_open?: number | null; cycle_time?: number | null; repo_id?: string; base_branch?: string | null }[]);
   if (branchFilter && rows.length > 0) {
     rows = filterRowsByBranchMode(rows, branchFilter.branchMode, branchFilter.repoBranchMap);
   }
@@ -288,8 +323,12 @@ export async function getLeadTimeFromSupabase(
 }
 
 /**
- * Deployment Frequency = count of PRs (state MERGED, updated_at in range) / time.
- * If branchFilter is provided, only PRs with base_branch matching the repo's prod/stage/dev branch are counted.
+ * Deployment Frequency = count of unique merged PRs (updated_at in range) / time.
+ * Uses pull_requests as source of truth — same pool as the Deployment Pipeline panel —
+ * so the "N total deployments" label matches the pipeline's per-environment counts.
+ * Duplicate DB rows (from dual ingestion) are removed by deduplicateByRepoPrNo.
+ * If branchFilter is provided, only PRs with base_branch matching the repo's
+ * prod/stage/dev branch are counted.
  */
 export async function getDeploymentFrequencyFromSupabase(
   supabase: SupabaseClient,
@@ -311,7 +350,7 @@ export async function getDeploymentFrequencyFromSupabase(
   const fromStr = fromDate.toISOString();
   const toStr = toDate.toISOString();
 
-  const selectFields = branchFilter ? 'repo_id, base_branch' : '*';
+  const selectFields = branchFilter ? 'pr_no, repo_id, base_branch' : 'pr_no, repo_id';
   const { data: rawRows, error } = await supabase
     .from('pull_requests')
     .select(selectFields)
@@ -329,9 +368,9 @@ export async function getDeploymentFrequencyFromSupabase(
     };
   }
 
-  let rows = (rawRows || []) as { repo_id?: string; base_branch?: string | null }[];
+  let rows = deduplicateByRepoPrNo((rawRows || []) as unknown as { pr_no?: number | string | null; repo_id: string; base_branch?: string | null }[]);
   if (branchFilter && rows.length > 0) {
-    rows = filterRowsByBranchMode(rows, branchFilter.branchMode, branchFilter.repoBranchMap);
+    rows = filterRowsByBranchMode(rows, branchFilter.branchMode, branchFilter.repoBranchMap) as typeof rows;
   }
   const total_deployments = rows.length;
   const days = Math.max(1, differenceInDays(toDate, fromDate) + 1);
@@ -352,7 +391,9 @@ export async function getDeploymentFrequencyFromSupabase(
 export type DeploymentFrequencyTrendsMap = Record<string, { count: number }>;
 
 /**
- * Per-day count of MERGED PRs. If branchFilter provided, only PRs with base_branch matching repo's prod/stage/dev.
+ * Per-day count of unique merged PRs. If branchFilter provided, only PRs with
+ * base_branch matching repo's prod/stage/dev.
+ * Deduplicates by (repo_id, pr_no) to remove dual-ingestion duplicates.
  */
 export async function getDeploymentFrequencyTrendsFromSupabase(
   supabase: SupabaseClient,
@@ -367,7 +408,7 @@ export async function getDeploymentFrequencyTrendsFromSupabase(
   const fromStr = fromDate.toISOString();
   const toStr = toDate.toISOString();
 
-  const selectFields = branchFilter ? 'updated_at, repo_id, base_branch' : 'updated_at';
+  const selectFields = branchFilter ? 'pr_no, repo_id, updated_at, base_branch' : 'pr_no, repo_id, updated_at';
   const { data: rawRows, error } = await supabase
     .from('pull_requests')
     .select(selectFields)
@@ -378,9 +419,9 @@ export async function getDeploymentFrequencyTrendsFromSupabase(
 
   if (error || !rawRows || rawRows.length === 0) return {};
 
-  let rows = rawRows as { updated_at?: string | null; repo_id?: string; base_branch?: string | null }[];
+  let rows = deduplicateByRepoPrNo(rawRows as unknown as { pr_no?: number | string | null; updated_at?: string | null; repo_id: string; base_branch?: string | null }[]);
   if (branchFilter && rows.length > 0) {
-    rows = filterRowsByBranchMode(rows, branchFilter.branchMode, branchFilter.repoBranchMap);
+    rows = filterRowsByBranchMode(rows, branchFilter.branchMode, branchFilter.repoBranchMap) as typeof rows;
   }
 
   const byDate: Record<string, number> = {};
@@ -409,17 +450,13 @@ export async function getDeploymentFrequencyTrendsFromSupabase(
  * Branch filtering is applied once to the fetched run set and reused for both
  * total_deployments and failure detection — guaranteeing CFR is in [0, 100].
  *
- * A run counts as a FAILED deployment when ANY of the following is true:
- *   (a) conclusion === 'failure'                 — pipeline broke
- *   (b) head_branch starts with hotfix/|hotfix-  — hotfix deployment
- *   (c) head_branch starts with revert/|revert-  — branch-level revert
- *   (d) head_branch starts with rollback/|rollback- — rollback branch
- *   (e) workflow name contains rollback/revert/hotfix
- *   (f) run_id appears in incidents.workflow_run_id — incident-linked
+ * CFR = (failed deployments / total deployments) × 100
  *
- * Incidents are never counted independently. Duplicate incident rows referencing
- * the same run_id are collapsed by a Set, so one run = at most one failed deployment.
- * Incidents referencing run_ids outside the filtered window are ignored.
+ * A deployment is a FAILURE when: conclusion='failure' OR branch is hotfix/revert/rollback
+ * OR workflow name contains hotfix/revert/rollback OR run_id is in incidents table.
+ *
+ * Incidents are never counted independently — duplicate incident rows referencing
+ * the same run_id collapse to 1 via Set. Incidents outside the filtered window are ignored.
  *
  * Returns null (not 0) when there are no deployments in the window.
  */
@@ -829,7 +866,10 @@ export async function getLeadTimePRsFromSupabase(
 
   if (error || !rawPrRows || rawPrRows.length === 0) return [];
 
-  let prRows = rawPrRows as SupabaseLeadTimePRRow[];
+  // Deduplicate: the pull_requests table can have two rows per PR due to
+  // dual ingestion paths (one upsert + one plain insert). Remove duplicates
+  // before any further processing so the overlay shows each PR only once.
+  let prRows = deduplicateByRepoPrNo(rawPrRows as SupabaseLeadTimePRRow[]);
   if (branchFilter && prRows.length > 0) {
     prRows = filterRowsByBranchMode(prRows, branchFilter.branchMode, branchFilter.repoBranchMap);
   }
@@ -866,7 +906,7 @@ export async function getLeadTimeTrendsFromSupabase(
   const fromStr = fromDate.toISOString();
   const toStr = toDate.toISOString();
 
-  const selectFields = branchFilter ? 'first_commit_to_open, cycle_time, updated_at, repo_id, base_branch' : 'first_commit_to_open, cycle_time, updated_at';
+  const selectFields = branchFilter ? 'pr_no, repo_id, first_commit_to_open, cycle_time, updated_at, base_branch' : 'pr_no, repo_id, first_commit_to_open, cycle_time, updated_at';
   const { data: rawRows, error } = await supabase
     .from('pull_requests')
     .select(selectFields)
@@ -877,7 +917,7 @@ export async function getLeadTimeTrendsFromSupabase(
 
   if (error || !rawRows || rawRows.length === 0) return {};
 
-  let rows = rawRows as { first_commit_to_open?: number | null; cycle_time?: number | null; updated_at?: string | null; repo_id?: string; base_branch?: string | null }[];
+  let rows = deduplicateByRepoPrNo(rawRows as { pr_no?: number | string | null; first_commit_to_open?: number | null; cycle_time?: number | null; updated_at?: string | null; repo_id?: string; base_branch?: string | null }[]);
   if (branchFilter && rows.length > 0) {
     rows = filterRowsByBranchMode(rows, branchFilter.branchMode, branchFilter.repoBranchMap);
   }

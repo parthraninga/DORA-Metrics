@@ -149,20 +149,78 @@ async function getDeploymentsWithIncidentsFromSupabase(
           )
         : 0;
 
-    const firstResolvedDate = incs[0]?.resolved_date ?? null;
+    // Deduplicate incident rows that share the same (creation_date, resolved_date).
+    // The DB can contain duplicate incident rows for the same workflow run due to
+    // repeated ingestion — collapse them to one per unique time window.
+    const seenIncidentWindows = new Set<string>();
+    const uniqueIncs = incs.filter((i) => {
+      const windowKey = `${i.creation_date ?? ''}|${i.resolved_date ?? ''}`;
+      if (seenIncidentWindows.has(windowKey)) return false;
+      seenIncidentWindows.add(windowKey);
+      return true;
+    });
+
+    const firstResolvedDate = uniqueIncs[0]?.resolved_date ?? null;
     const recoveryRun = firstResolvedDate
-      ? recoveryRunsMap.get(recoveryRunKey(incs[0].repo_id, firstResolvedDate))
+      ? recoveryRunsMap.get(recoveryRunKey(uniqueIncs[0].repo_id, firstResolvedDate))
       : undefined;
 
-    const incidentList: Incident[] = incs.map((i) => {
+    /** Format a UTC ISO string as "16 Jan 2026, 11:42:07" for display */
+    const fmtDate = (iso: string | null): string => {
+      if (!iso) return '—';
+      const d = new Date(iso);
+      const dd = String(d.getUTCDate()).padStart(2, '0');
+      const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getUTCMonth()];
+      const yyyy = d.getUTCFullYear();
+      const hh = String(d.getUTCHours()).padStart(2, '0');
+      const mm = String(d.getUTCMinutes()).padStart(2, '0');
+      const ss = String(d.getUTCSeconds()).padStart(2, '0');
+      return `${dd} ${mon} ${yyyy}, ${hh}:${mm}:${ss} UTC`;
+    };
+
+    const incidentList: Incident[] = uniqueIncs.map((i, idx) => {
       const creationDate = i.creation_date ?? i.created_at ?? createdAt;
       const resolvedDate = i.resolved_date ?? i.creation_date ?? i.created_at ?? createdAt;
+
+      // Number incidents when there are multiple under the same workflow run
+      const incidentLabel =
+        uniqueIncs.length > 1
+          ? `Incident ${idx + 1}/${uniqueIncs.length}`
+          : 'Incident';
+      const branchPart = wr.head_branch ? ` on ${wr.head_branch}` : '';
+      const runPart = wr.name ? ` — ${wr.name}` : wr.run_id ? ` — Run #${wr.run_id}` : '';
+      // e.g. "Incident 1/2 on main — CI/CD Pipeline"
+      const incidentTitle = `${incidentLabel}${branchPart}${runPart}`;
+
+      // Per-incident recovery calculation — each incident has its own creation/resolved dates
+      const recoveryMs =
+        creationDate && resolvedDate
+          ? new Date(resolvedDate).getTime() - new Date(creationDate).getTime()
+          : null;
+      const recoverySeconds = recoveryMs !== null ? Math.round(recoveryMs / 1000) : null;
+      const recoveryStr =
+        recoverySeconds !== null && recoverySeconds > 0
+          ? recoverySeconds >= 3600
+            ? `${Math.floor(recoverySeconds / 3600)}h ${Math.floor((recoverySeconds % 3600) / 60)}m ${recoverySeconds % 60}s`
+            : recoverySeconds >= 60
+            ? `${Math.floor(recoverySeconds / 60)}m ${recoverySeconds % 60}s`
+            : `${recoverySeconds}s`
+          : '< 1s';
+
+      // Summary shows exact timestamps + formula so the calculation is fully transparent
+      const incidentSummary = [
+        `Workflow run #${wr.run_id ?? '—'} · Branch: ${wr.head_branch ?? '—'} · Result: ${wr.conclusion ?? '—'}`,
+        `Detected:  ${fmtDate(creationDate)}`,
+        `Resolved:  ${fmtDate(resolvedDate)}`,
+        `Recovery:  ${recoveryStr}  (= resolved − detected)`
+      ].join('\n');
+
       return {
         id: i.id,
-        title: 'Workflow incident',
-        summary: '',
+        title: incidentTitle,
+        summary: incidentSummary,
         key: i.id,
-        incident_number: 0,
+        incident_number: idx + 1,
         provider: 'zenduty',
         status: IncidentStatus.RESOLVED,
         creation_date: creationDate,
