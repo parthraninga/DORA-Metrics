@@ -36,7 +36,19 @@ type WorkflowRunLike = {
   html_url?: string;
   actor?: unknown;
   workflow_id?: number;
+  pr_number?: number;
+  pull_requests?: { number?: number; no?: number }[];
 };
+
+function toActorString(actor: unknown): string | null {
+  if (actor == null) return null;
+  if (typeof actor === 'string') return actor;
+  if (typeof actor === 'object' && actor !== null) {
+    const a = actor as { username?: string; login?: string; name?: string };
+    return a.username ?? a.login ?? a.name ?? null;
+  }
+  return null;
+}
 
 function toAuthorString(a: RelatedPr['author']): string | null {
   if (a == null) return null;
@@ -48,30 +60,6 @@ function toAuthorString(a: RelatedPr['author']): string | null {
   return null;
 }
 
-function parseWorkflowRunId(incident: unknown): number | null {
-  if (typeof incident === 'number' && Number.isInteger(incident)) return incident;
-  if (typeof incident === 'object' && incident !== null) {
-    const o = incident as Record<string, unknown>;
-    const keyVal = o.key;
-    if (typeof keyVal === 'string') {
-      const m = /workflow-(\d+)/i.exec(keyVal);
-      if (m) return parseInt(m[1], 10);
-    }
-    const id = o.workflow_run_id ?? o.run_id ?? o.id;
-    if (typeof id === 'number') return id;
-    if (typeof id === 'string' && /^\d+$/.test(id)) return parseInt(id, 10);
-    for (const key of Object.keys(o)) {
-      const m = /^workflow-(\d+)$/i.exec(key);
-      if (m) return parseInt(m[1], 10);
-    }
-  }
-  if (typeof incident === 'string') {
-    const m = /workflow-(\d+)/i.exec(incident);
-    if (m) return parseInt(m[1], 10);
-    if (/^\d+$/.test(incident)) return parseInt(incident, 10);
-  }
-  return null;
-}
 
 function toTimestamp(s: unknown): string | null {
   if (s == null) return null;
@@ -129,9 +117,11 @@ export async function parseAndStoreFetchResponse(
   };
 
   for (const { pr, prNo } of relatedPrs) {
+    // Upsert: if this PR already exists for this repo, update it rather than inserting a duplicate.
+    // Requires UNIQUE constraint on (repo_id, pr_no) — see migrations/add_unique_constraints.sql
     const { data: inserted, error } = await supabase
       .from('pull_requests')
-      .insert({
+      .upsert({
         repo_id: repoId,
         fetch_data_id: fetchDataId,
         pr_no: prNo,
@@ -148,7 +138,7 @@ export async function parseAndStoreFetchResponse(
         additions: toInt(pr.additions),
         deletions: toInt(pr.deletions),
         comments: toInt(pr.comments),
-      })
+      }, { onConflict: 'repo_id,pr_no', ignoreDuplicates: false })
       .select('id')
       .single();
 
@@ -166,12 +156,46 @@ export async function parseAndStoreFetchResponse(
   const dataWrs = (data.workflow_runs as WorkflowRunLike[] | undefined) ?? [];
   if (dataWrs.length) workflowRunsRaw.push(...dataWrs);
 
+  // Deduplicate by run_id within the same repo to prevent duplicate rows
+  const seenRunIds = new Set<number | string>();
+  const uniqueWorkflowRuns: WorkflowRunLike[] = [];
   for (const wr of workflowRunsRaw) {
     const runId = wr.id ?? wr.run_id ?? (typeof wr.name === 'string' ? /Run\s+(\d+)/i.exec(wr.name)?.[1] : null);
-    const { error } = await supabase.from('workflow_runs').insert({
+    const key = runId != null ? String(runId) : null;
+    if (key && seenRunIds.has(key)) continue;
+    if (key) seenRunIds.add(key);
+    uniqueWorkflowRuns.push(wr);
+  }
+
+  // Map workflow run IDs to associated PR numbers for incident linkage
+  const runIdToPrMap = new Map<number, { prId: string | null; prNo: number | null }>();
+
+  for (const wr of uniqueWorkflowRuns) {
+    const runId = wr.id ?? wr.run_id ?? (typeof wr.name === 'string' ? /Run\s+(\d+)/i.exec(wr.name)?.[1] : null);
+    const runIdNum = runId != null ? (typeof runId === 'number' ? runId : parseInt(String(runId), 10)) : null;
+    
+    // Extract PR number from workflow run if available
+    let prNumber: number | null = null;
+    if (wr.pr_number != null) {
+      prNumber = typeof wr.pr_number === 'number' ? wr.pr_number : parseInt(String(wr.pr_number), 10);
+    } else if (Array.isArray(wr.pull_requests) && wr.pull_requests.length > 0) {
+      const prNum = wr.pull_requests[0].number ?? wr.pull_requests[0].no;
+      if (prNum != null) {
+        prNumber = typeof prNum === 'number' ? prNum : parseInt(String(prNum), 10);
+      }
+    }
+    
+    // Store mapping for incidents
+    if (runIdNum != null && prNumber != null) {
+      const prId = prNoToId.get(prNumber) ?? null;
+      runIdToPrMap.set(runIdNum, { prId, prNo: prNumber });
+    }
+
+    // Upsert: if same run_id already exists for this repo, update it instead of inserting a duplicate
+    const { error } = await supabase.from('workflow_runs').upsert({
       repo_id: repoId,
       fetch_data_id: fetchDataId,
-      run_id: runId != null ? (typeof runId === 'number' ? runId : parseInt(String(runId), 10)) : null,
+      run_id: runIdNum,
       name: wr.name ?? null,
       head_branch: wr.head_branch ?? null,
       status: wr.status ?? null,
@@ -179,9 +203,9 @@ export async function parseAndStoreFetchResponse(
       created_at: toTimestamp(wr.created_at) ?? null,
       updated_at: toTimestamp(wr.updated_at) ?? null,
       html_url: typeof wr.html_url === 'string' ? wr.html_url : null,
-      actor: wr.actor != null ? wr.actor : null,
+      actor: toActorString(wr.actor),
       workflow_id: wr.workflow_id ?? null,
-    });
+    }, { onConflict: 'repo_id,run_id', ignoreDuplicates: false });
     if (!error) result.workflowRuns += 1;
   }
 
@@ -215,15 +239,19 @@ export async function parseAndStoreFetchResponse(
       }
     }
 
-    const { error } = await supabase.from('incidents').insert({
+    // Get PR info for this workflow run if available
+    const prInfo = runIdToPrMap.get(run.runId) ?? { prId: null, prNo: null };
+    
+    // Upsert: one incident per failure run per repo — ignore if already exists
+    const { error } = await supabase.from('incidents').upsert({
       repo_id: repoId,
       fetch_data_id: fetchDataId,
-      pull_request_id: null,
+      pull_request_id: prInfo.prId,
       workflow_run_id: run.runId,
-      pr_no: null,
+      pr_no: prInfo.prNo != null ? String(prInfo.prNo) : null,
       creation_date: run.created_at,
       resolved_date: resolvedDate,
-    });
+    }, { onConflict: 'repo_id,workflow_run_id', ignoreDuplicates: true });
     if (!error) result.incidents += 1;
   }
 

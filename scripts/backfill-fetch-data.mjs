@@ -126,6 +126,33 @@ async function processRow(row) {
     // repos[].incidents[] — ids are "None", derive from key field.
     const incidentsList = Array.isArray(repoData.incidents) ? repoData.incidents : [];
     const validIncidents = [];
+
+    // Build a map of workflow run IDs to PR numbers for incident linkage
+    const workflowRunsToPr = new Map();
+    const workflowRuns = Array.isArray(repoData.workflow_runs) ? repoData.workflow_runs : [];
+    for (const wr of workflowRuns) {
+      const runId = toInt(wr.id ?? wr.run_id);
+      let prNumber = null;
+      if (wr.pr_number != null) {
+        prNumber = toInt(wr.pr_number);
+      } else if (Array.isArray(wr.pull_requests) && wr.pull_requests.length > 0) {
+        prNumber = toInt(wr.pull_requests[0].number ?? wr.pull_requests[0].no);
+      }
+      if (runId != null && prNumber != null) {
+        workflowRunsToPr.set(runId, prNumber);
+      }
+    }
+
+    // Build PR ID map for incident linkage
+    const prsForRepo = Array.isArray(repoData.pull_requests) ? repoData.pull_requests : [];
+    const prNoToId = new Map();
+    for (const pr of prsForRepo) {
+      const prNo = pr.no ?? pr.number;
+      if (prNo != null && isUUID(pr.id)) {
+        prNoToId.set(toInt(prNo), pr.id);
+      }
+    }
+
     for (const inc of incidentsList) {
       let incId = isUUID(inc.id) ? inc.id : null;
       if (!incId) {
@@ -137,9 +164,20 @@ async function processRow(row) {
       }
 
       let workflowRunId = null;
+      let prNumber = null;
       if (typeof inc.key === 'string' && inc.key.startsWith('workflow-')) {
         const n = inc.key.replace('workflow-', '');
-        if (n && !isNaN(n)) workflowRunId = parseInt(n, 10);
+        if (n && !isNaN(n)) {
+          workflowRunId = parseInt(n, 10);
+          // Try to get PR number from workflow run
+          prNumber = workflowRunsToPr.get(workflowRunId);
+        }
+      }
+
+      // Get PR ID if we have a PR number
+      let prId = null;
+      if (prNumber != null) {
+        prId = prNoToId.get(prNumber) ?? null;
       }
 
       // incidents table columns: id, repo_id, fetch_data_id, pull_request_id,
@@ -148,9 +186,9 @@ async function processRow(row) {
         id:              incId,
         repo_id:         repoId,
         fetch_data_id:   fetchDataId,
-        pull_request_id: isUUID(inc.pull_request_id) ? inc.pull_request_id : null,
+        pull_request_id: prId,
         workflow_run_id: workflowRunId,
-        pr_no:           inc.incident_number?.toString() ?? null,
+        pr_no:           prNumber != null ? String(prNumber) : null,
         creation_date:   toTs(inc.creation_date),
         resolved_date:   toTs(inc.resolved_date),
         created_at:      toTs(inc.creation_date),
@@ -171,9 +209,9 @@ async function processRow(row) {
 
     // ── Workflow Runs ──────────────────────────────────────────────────────
     // repos[].workflow_runs[] — ids are numeric, generate deterministic UUID.
-    const workflowRuns = Array.isArray(repoData.workflow_runs) ? repoData.workflow_runs : [];
+    const workflowRunsRaw = Array.isArray(repoData.workflow_runs) ? repoData.workflow_runs : [];
     const validWRs = [];
-    for (const wr of workflowRuns) {
+    for (const wr of workflowRunsRaw) {
       const rawId = wr.id ?? wr.run_id;
       if (rawId == null) continue;
       const rawIdStr = String(rawId);

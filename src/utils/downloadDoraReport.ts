@@ -1,4 +1,5 @@
 import { getDoraScore } from '@/utils/dora';
+import { getDurationString } from '@/utils/date';
 import {
   TeamDoraMetricsApiResponseType,
   PR
@@ -28,12 +29,16 @@ const secToMinsStr = (v: number | null | undefined): string => {
   return `${secs}s`;
 };
 
-/** Format ISO timestamp → "YYYY-MM-DD HH:mm" (UTC) */
+/** Format ISO timestamp → "YYYY-MM-DD h:mm AM/PM" in LOCAL time (matches dashboard display) */
 const fmtDT = (iso: string | null | undefined): string => {
   if (!iso) return '0';
   const d = new Date(iso);
   const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+  const h24 = d.getHours();
+  const ampm = h24 >= 12 ? 'PM' : 'AM';
+  const h12 = h24 % 12 || 12;
+  const pad2 = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${h12}:${pad2(d.getMinutes())} ${ampm}`;
 };
 
 const todayStr = (): string => fmtDT(new Date().toISOString());
@@ -51,14 +56,10 @@ const row = (...cols: (string | number | null | undefined)[]): string =>
 
 // ── Duration helpers ─────────────────────────────────────────────────────────
 
+/** Convert seconds → human-readable duration matching dashboard format (e.g. "18d 46m", "6w 6d", "12m 53s") */
 function durationHrsStr(seconds: number | null | undefined): string {
-  const hrs = secToHrs(seconds);
-  if (hrs === 0) return '0.00 hrs';
-  if (hrs < 1) return `${r2(hrs * 60)} min`;
-  const days = Math.floor(hrs / 24);
-  const remHrs = r2(hrs % 24);
-  if (days > 0) return `${days}d ${remHrs}h`;
-  return `${hrs} hrs`;
+  if (!seconds || seconds <= 0) return '-';
+  return getDurationString(seconds) ?? '-';
 }
 
 // ── Median helper ─────────────────────────────────────────────────────────────
@@ -142,7 +143,8 @@ function buildReport(
   const mttrSec       = m.mean_time_to_restore_stats?.current?.mean_time_to_recovery;
   const mttrHrs       = secToHrs(mttrSec ?? 0);
   const incidentCount = m.mean_time_to_restore_stats?.current?.incident_count ?? 0;
-  const prs: PR[]     = (m as any).lead_time_prs ?? [];
+  const rawPrs: PR[]  = (m as any).lead_time_prs ?? [];
+  const prs: PR[]     = Array.from(new Map(rawPrs.map((pr) => [pr.id, pr])).values());
   const pipeline      = m.deployment_pipeline;
   const period        = getPeriod(m);
 
@@ -169,9 +171,129 @@ function buildReport(
   lines.push(row('Repositories Included',    repoList));
   lines.push(row('Report Period',            dateRangeLabel || (period.start + ' to ' + period.end)));
   lines.push(row('Generated Date',           todayStr()));
-  lines.push(row('DORA Score',               doraScore + ' / 10'));
+  // Always compute from raw values so individual scores are never N/A
+  const doraBreakdown = getDoraScore({
+    lt:   typeof ltSec       === 'number' ? ltSec       : null,
+    df:   typeof dfWeeklyRaw === 'number' ? dfWeeklyRaw : null,
+    cfr:  typeof cfrPctRaw   === 'number' ? cfrPctRaw   : null,
+    mttr: typeof mttrSec     === 'number' ? mttrSec     : null,
+  });
 
+  const tierLabel = (score: number | null | undefined): string => {
+    if (score == null) return 'Not Enough Data';
+    if (score >= 8) return 'Elite';
+    if (score >= 6) return 'High';
+    if (score >= 4) return 'Medium';
+    return 'Low';
+  };
+
+  const overallTier = tierLabel(doraScore);
+  const overallDesc =
+    overallTier === 'Elite'  ? 'Outstanding — your team is among the top performers worldwide.' :
+    overallTier === 'High'   ? 'Strong — your team is performing above industry average.' :
+    overallTier === 'Medium' ? 'Developing — good progress with room to improve in some areas.' :
+                               'Needs Attention — significant improvement opportunities exist.';
+
+  lines.push(row('DORA Score',  `${doraScore} / 10  (${overallTier})`));
+  lines.push(row('What this means', overallDesc));
   lines.push('');
+
+  // Helper: bucket description for each metric score
+  const ltBracket = (score: number | undefined): string => {
+    if (score == null) return 'No data';
+    if (score >= 10) return 'Under 1 hour (best possible)';
+    if (score >= 8)  return 'Same day (under 24 hours)';
+    if (score >= 6)  return 'Under 1 week';
+    if (score >= 4)  return 'Under 1 month';
+    if (score >= 2)  return 'Between 1 month & 6 months';
+    return 'Over 6 months';
+  };
+  const dfBracket = (score: number | undefined): string => {
+    if (score == null) return 'No data';
+    if (score >= 10) return 'On demand (multiple/day)';
+    if (score >= 8)  return 'Multiple times per day';
+    if (score >= 6)  return 'Daily';
+    if (score >= 4)  return 'Between weekly & daily';
+    if (score >= 2)  return 'Monthly';
+    return 'Less than monthly';
+  };
+  const cfrBracket = (pct: number | null | undefined): string => {
+    if (pct == null) return 'No data';
+    if (pct === 0)   return 'Zero failures (perfect)';
+    if (pct < 5)     return 'Less than 5% failure rate';
+    if (pct < 15)    return 'Less than 15% failure rate';
+    if (pct < 30)    return 'Less than 30% failure rate';
+    return 'Over 30% failure rate';
+  };
+  const mttrBracket = (score: number | undefined): string => ltBracket(score);
+
+  const ltScore   = doraBreakdown.lt;
+  const dfScore   = doraBreakdown.df;
+  const cfrScore  = doraBreakdown.cfr;
+  const mttrScore = doraBreakdown.mttr;
+
+  // Build the formula string: (2 + 6 + 10) ÷ 3 = 6.0 → 6/10
+  const scoreParts: { name: string; val: number }[] = [];
+  if (ltScore   != null) scoreParts.push({ name: 'Lead Time',   val: ltScore });
+  if (dfScore   != null) scoreParts.push({ name: 'Deploy Freq', val: dfScore });
+  if (cfrScore  != null) scoreParts.push({ name: 'CFR',         val: cfrScore });
+  if (mttrScore != null) scoreParts.push({ name: 'MTTR',        val: mttrScore });
+  const sumParts    = scoreParts.map((s) => s.val).join(' + ');
+  const total       = scoreParts.reduce((a, s) => a + s.val, 0);
+  const count       = scoreParts.length;
+  const formulaStr  = count > 0
+    ? `(${sumParts}) ÷ ${count} = ${total} ÷ ${count} = ${doraScore} → ${doraScore}/10`
+    : 'No metric data available';
+
+  lines.push('YOUR TEAM\'S DORA PERFORMANCE');
+  lines.push(row('Metric', 'Your Result', 'Where It Falls', 'Score', 'Performance Level', 'What This Measures'));
+  lines.push(row(
+    'Lead Time for Changes',
+    getDurationString(ltSec ?? 0) ?? 'No Data',
+    ltBracket(ltScore),
+    ltScore != null ? `${ltScore} / 10` : 'Not counted',
+    tierLabel(ltScore),
+    'Time from first code commit to production deployment'
+  ));
+  lines.push(row(
+    'Deployment Frequency',
+    dfWeekly + ' per week',
+    dfBracket(dfScore),
+    dfScore != null ? `${dfScore} / 10` : 'Not counted',
+    tierLabel(dfScore),
+    'How often your team successfully deploys to production'
+  ));
+  lines.push(row(
+    'Change Failure Rate',
+    cfrPct + '%',
+    cfrBracket(typeof cfrPctRaw === 'number' ? cfrPctRaw : null),
+    cfrScore != null ? `${cfrScore} / 10` : 'Not counted',
+    tierLabel(cfrScore),
+    '% of deployments that caused a failure or needed rollback'
+  ));
+  lines.push(row(
+    'Mean Time to Recovery',
+    getDurationString(mttrSec ?? 0) ?? 'No Data',
+    mttrBracket(mttrScore),
+    mttrScore != null ? `${mttrScore} / 10` : 'Not counted',
+    tierLabel(mttrScore),
+    'Average time to recover from a production incident'
+  ));
+  lines.push('');
+  lines.push('HOW THE FINAL SCORE IS CALCULATED');
+  lines.push(row('Formula', formulaStr));
+  lines.push(row('Metrics counted', `${count} of 4 (only metrics with available data are included)`));
+  lines.push('');
+
+  lines.push('WHAT EACH PERFORMANCE LEVEL MEANS');
+  lines.push(row('Level', 'Score', 'What It Means', 'Goal'));
+  lines.push(row('Elite',  '8 – 10', 'Top-tier delivery speed and stability. Best-in-class.',        'Maintain this level.'));
+  lines.push(row('High',   '6 – 7',  'Above average. Strong DevOps practices in place.',             'Push toward Elite.'));
+  lines.push(row('Medium', '4 – 5',  'Getting there. Some bottlenecks slowing the team down.',       'Identify and fix slowest metric.'));
+  lines.push(row('Low',    '0 – 3',  'Significant friction in the delivery pipeline.',               'Prioritise improvements immediately.'));
+
+
+
 
   // ── DEPLOYMENT PIPELINE FUNNEL ─────────────────────────────────────────────
   lines.push('DEPLOYMENT PIPELINE FUNNEL');
@@ -248,21 +370,26 @@ function buildReport(
   lines.push('');
 
   lines.push('PR DELIVERY TABLE');
-  lines.push(row('PR Number', 'Repository', 'Author', 'Commit to PR Open (hrs)', 'PR Open to First Review (hrs)', 'Rework Time (hrs)', 'Merge Time (hrs)', 'Merge to Deployment (hrs)', 'Total Lead Time (hrs)', 'Deployment Date'));
+  lines.push(row('PR Number', 'Repository', 'Author', 'Commit to PR Open', 'PR Open to First Review', 'Rework Time', 'Merge Time', 'Merge to Deployment', 'Total Lead Time', 'Deployment Date'));
 
   if (prs.length > 0) {
     for (const pr of prs) {
-      const fco   = secToHrs(pr.first_commit_to_open);
-      const resp  = secToHrs(pr.first_response_time);
-      const rwk   = secToHrs(pr.rework_time);
-      const mrg   = secToHrs(pr.merge_time ?? pr.cycle_time);
-      const m2d   = secToHrs(pr.merge_to_deploy);
-      const total = r2(fco + resp + rwk + mrg + m2d) || secToHrs((pr.first_commit_to_open ?? 0) + (pr.cycle_time ?? 0));
+      const fcoSec  = pr.first_commit_to_open ?? 0;
+      const respSec = pr.first_response_time ?? 0;
+      const rwkSec  = pr.rework_time ?? 0;
+      const mrgSec  = pr.merge_time ?? pr.cycle_time ?? 0;
+      const m2dSec  = pr.merge_to_deploy ?? 0;
+      const totalSec = (fcoSec + respSec + rwkSec + mrgSec + m2dSec) || ((pr.first_commit_to_open ?? 0) + (pr.cycle_time ?? 0));
       lines.push(row(
         '#' + pr.number,
         pr.repo_name ?? 'Unknown',
         pr.author?.linked_user?.name ?? pr.author?.username ?? 'Unknown',
-        fco, resp, rwk, mrg, m2d, total,
+        getDurationString(fcoSec)  ?? '-',
+        getDurationString(respSec) ?? '-',
+        getDurationString(rwkSec)  ?? '-',
+        getDurationString(mrgSec)  ?? '-',
+        getDurationString(m2dSec)  ?? '-',
+        getDurationString(totalSec) ?? '-',
         fmtDT(pr.state_changed_at ?? pr.updated_at)
       ));
     }

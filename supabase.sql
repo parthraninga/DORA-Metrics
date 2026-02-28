@@ -60,7 +60,8 @@ CREATE TABLE public.pull_requests (
     commits bigint,
     additions bigint,
     deletions bigint,
-    comments bigint
+    comments bigint,
+    CONSTRAINT pull_requests_repo_id_pr_no_key UNIQUE (repo_id, pr_no)
 );
 
 CREATE TABLE public.workflow_runs (
@@ -75,8 +76,9 @@ CREATE TABLE public.workflow_runs (
     created_at timestamptz,
     updated_at timestamptz,
     html_url text,
-    actor jsonb,
-    workflow_id bigint
+    actor text,              -- GitHub username (e.g. "john_doe")
+    workflow_id bigint,
+    CONSTRAINT workflow_runs_repo_id_run_id_key UNIQUE (repo_id, run_id)
 );
 
 CREATE TABLE public.incidents (
@@ -88,5 +90,6 @@ CREATE TABLE public.incidents (
     created_at timestamptz DEFAULT now(),
     pr_no bigint,
     creation_date timestamptz,
-    resolved_date timestamptz
+    resolved_date timestamptz,
+    CONSTRAINT incidents_repo_id_workflow_run_id_key UNIQUE (repo_id, workflow_run_id)
 );

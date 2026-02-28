@@ -78,7 +78,6 @@
     "yup": "0.32.11"
   },
   "scripts": {
-    "knip": "knip",
     "prod-tun": "bash -c \"$PROD_TUNNEL\"",
     "stage-tun": "bash -c \"$STAGE_TUNNEL\"",
     "http": "node http-server",
@@ -96,14 +95,11 @@
     "quality-check": "concurrently -c \"auto\" --kill-others-on-fail \"yarn lint-fix\" \"yarn tsc\"",
     "qc": "yarn quality-check",
     "clean": "rm -rf .next",
-    "test": "jest --passWithNoTests --onlyChanged",
-    "test:e2e": "playwright test --headed",
-    "env": "bash ./scripts/setup-env.sh"
+    "test": "jest --passWithNoTests --onlyChanged"
   },
   "devDependencies": {
     "@next/bundle-analyzer": "^12.3.0",
     "@octokit/types": "^6.34.0",
-    "@playwright/test": "^1.28.0",
     "@types/js-cookie": "^3.0.2",
     "@types/node": "^16.17.0",
     "@types/nprogress": "0.2.0",
@@ -113,9 +109,7 @@
     "@types/react-copy-to-clipboard": "^5.0.4",
     "@types/react-dom": "^17.0.14",
     "@types/react-redux": "7.1.20",
-    "@types/ua-parser-js": "^0.7.36",
     "@types/uuid": "8.3.3",
-    "@types/vis": "^4.21.23",
     "@types/voca": "^1.4.2",
     "@typescript-eslint/eslint-plugin": "^6.10.0",
     "@typescript-eslint/parser": "^6.10.0",
